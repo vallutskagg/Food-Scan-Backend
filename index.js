@@ -9,7 +9,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ⚠️ Vain testikäyttöön
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
@@ -32,15 +31,35 @@ ${ocrText}
 """
 
 TEHTÄVÄ:
-1. Tunnista tekstistä mahdolliset ravintoarvot (energia, rasva, sokeri, proteiini, suola).
-2. Huomioi epäselvät, puuttuvat tai epätarkat tiedot.
-3. Arvioi kokonaisuutena onko tuote:
-   - terveellinen
-   - kohtalainen
-   - vai satunnaisesti nautittava
-4. Perustele lyhyesti ja selkeästi suomeksi.
+1. Tunnista tekstistä ravintoarvot per 100 g / 100 ml TAI per annos.
+   - energia (kcal)
+   - rasva (g)
+   - joista sokerit (g)
+   - proteiini (g)
+   - suola (g)
 
-Lopuksi anna selkeä JOHTOPÄÄTÖS.
+2. Jos pakkauksessa on ilmoitettu:
+   - koko (esim. 250 g, 330 ml)
+   - annosten määrä  
+   → LASKE KOKO TUOTTEEN RAVINTOARVOT YHTEENSÄ.
+
+3. Jos tietoja puuttuu, tee paras mahdollinen arvio ja kerro epävarmuus.
+
+4. Palauta tulos SELKEÄSTI seuraavassa muodossa:
+
+RAVINTOARVOT YHTEENSÄ:
+- Energia: X kcal
+- Rasva: X g
+- Joista sokerit: X g
+- Proteiini: X g
+- Suola: X g
+
+ARVIO:
+- Terveellisyysluokka: terveellinen / kohtalainen / satunnaisesti nautittava
+- Perustelu lyhyesti
+
+JOHTOPÄÄTÖS:
+Yksi selkeä lause käyttäjälle.
 `;
 
     const response = await fetch(
@@ -80,5 +99,5 @@ Lopuksi anna selkeä JOHTOPÄÄTÖS.
 });
 
 app.listen(3000, () => {
-  console.log("Backend käynnissä http://localhost:3000");
+  console.log("Backend käynnissä");
 });
