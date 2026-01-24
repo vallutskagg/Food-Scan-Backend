@@ -78,7 +78,7 @@ Lyhyt perustelu (1–2 virkettä).
 
 ---
 
-🔥 JOHTOPÄÄTÖS  
+🎯 JOHTOPÄÄTÖS  
 Yksi selkeä ja käyttäjälle ymmärrettävä lause.
 `;
 
