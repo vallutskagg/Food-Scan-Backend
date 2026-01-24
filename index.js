@@ -31,35 +31,55 @@ ${ocrText}
 """
 
 TEHTÄVÄ:
-1. Tunnista tekstistä ravintoarvot per 100 g / 100 ml TAI per annos.
-   - energia (kcal)
-   - rasva (g)
-   - joista sokerit (g)
-   - proteiini (g)
-   - suola (g)
+1️⃣ Tunnista tekstistä ravintoarvot per 100 g / 100 ml TAI per annos:
+  🍽️ Energia (kcal)  
+  🥑 Rasva (g)  
+  🍬 Joista sokerit (g)  
+  🍗 Proteiini (g)  
+  🧂 Suola (g)  
 
-2. Jos pakkauksessa on ilmoitettu:
+---
+
+2️⃣ Jos pakkauksessa on mainittu:
    - koko (esim. 250 g, 330 ml)
    - annosten määrä  
    → LASKE KOKO TUOTTEEN RAVINTOARVOT YHTEENSÄ.
 
-3. Jos tietoja puuttuu, tee paras mahdollinen arvio ja kerro epävarmuus.
+---
 
-4. Palauta tulos SELKEÄSTI seuraavassa muodossa:
+3️⃣ Jos jokin tieto puuttuu tai on epäselvä:
+- tee paras mahdollinen arvio
+- mainitse epävarmuus lyhyesti
 
-RAVINTOARVOT YHTEENSÄ:
-- Energia: X kcal
-- Rasva: X g
-- Joista sokerit: X g
-- Proteiini: X g
-- Suola: X g
+---
 
-ARVIO:
-- Terveellisyysluokka: terveellinen / kohtalainen / satunnaisesti nautittava
-- Perustelu lyhyesti
+4️⃣ Palauta tulos SELKEÄSTI seuraavassa muodossa:
 
-JOHTOPÄÄTÖS:
-Yksi selkeä lause käyttäjälle.
+📊 RAVINTOARVOT YHTEENSÄ  
+🔥 Energia: X kcal  
+🥑 Rasva: X g  
+🍬 Joista sokerit: X g  
+🍗 Proteiini: X g  
+🧂 Suola: X g  
+
+---
+
+📝 ARVIO  
+Terveellisyysluokka (VALITSE VAIN YKSI):
+
+🟢 terveellinen  
+🟡 kohtalainen  
+🔴 satunnaisesti nautittava  
+
+👉 Käytä AINOASTAAN valitun luokan emojia ja nimeä.  
+👉 Älä listaa muita vaihtoehtoja.
+
+Lyhyt perustelu (1–2 virkettä).
+
+---
+
+🔥 JOHTOPÄÄTÖS  
+Yksi selkeä ja käyttäjälle ymmärrettävä lause.
 `;
 
     const response = await fetch(
