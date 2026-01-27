@@ -15,14 +15,56 @@ const API_KEY = process.env.GEMINI_API_KEY;
 
 app.post("/analyze", async (req, res) => {
   try {
-    // 🔥 TÄRKEIN MUUTOS: vastaanotetaan koko OCR-teksti
-    const { ocrText } = req.body;
+    const { ocrText, profile } = req.body;
 
     if (!ocrText) {
       return res.status(400).json({ error: "OCR-teksti puuttuu" });
     }
 
-    const prompt = `
+    // 🔹 Jos profiili käytössä, käytä "personalisoitua" promptia
+    let prompt;
+
+    if (profile && profile.weight && profile.height) {
+      prompt = `
+KÄYTTÄJÄN TIEDOT:
+- Paino: ${profile.weight} kg
+- Pituus: ${profile.height} cm
+- Tavoite: ${profile.goal ?? "ei asetettu"}
+- Aikajänne: ${profile.timeframe ?? "ei asetettu"} kuukautta
+
+TUOTTEEN OCR-TEKSTI:
+"""
+${ocrText}
+"""
+
+TEHTÄVÄ:
+1. Arvioi päivittäinen energiantarve (BMR + kevyt aktiivisuus).
+2. Huomioi käyttäjän tavoite.
+3. Arvioi kuinka paljon tuotetta sopii:
+- kerralla
+- päivän aikana
+- viikon aikana
+
+PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA:
+
+👤 SINULLE SOPIVA MÄÄRÄ:
+- 🍽 Suositeltu annos: X g / ml
+- 🟢 terveellinen  
+  🟡 kohtalainen  
+  🔴 satunnaisesti nautittava  
+  👉 Käytä AINOASTAAN valitun luokan emojia ja nimeä.  
+  👉 Älä listaa muita vaihtoehtoja.
+- 📆 Kuinka usein: X
+
+📌 PERUSTELU LYHYESTI:
+Yksi perustelu.
+
+🎯 JOHTOPÄÄTÖS  
+Yksi selkeä lause.
+`;
+    } else {
+      // 🔹 Jos profiilia ei ole, käytä normaalia ravintoarvopromptia
+      prompt = `
 Seuraava teksti on luettu elintarvikepakkauksesta OCR:llä.
 
 TEKSTI:
@@ -74,14 +116,14 @@ Terveellisyysluokka (VALITSE VAIN YKSI):
 👉 Käytä AINOASTAAN valitun luokan emojia ja nimeä.  
 👉 Älä listaa muita vaihtoehtoja.
 
-Lyhyt perustelu (1–2 virkettä).
-
 ---
 
 🎯 JOHTOPÄÄTÖS  
 Yksi selkeä ja käyttäjälle ymmärrettävä lause.
 `;
+    }
 
+    // 🔹 Lähetä prompt AI:lle
     const response = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
       {
@@ -92,10 +134,7 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
         },
         body: JSON.stringify({
           contents: [
-            {
-              role: "user",
-              parts: [{ text: prompt }],
-            },
+            { role: "user", parts: [{ text: prompt }] },
           ],
         }),
       }
@@ -107,16 +146,15 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
     }
 
     const data = await response.json();
-    const result =
-      data.candidates?.[0]?.content?.parts?.[0]?.text ??
-      "Analyysi epäonnistui";
+    const result = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "Analyysi epäonnistui";
 
     res.json({ result });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Jokin meni pieleen" });
+    res.status(500).json({ error: err.message || "Jokin meni pieleen" });
   }
 });
+
 
 app.listen(3000, () => {
   console.log("Backend käynnissä");
