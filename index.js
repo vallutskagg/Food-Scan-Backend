@@ -25,12 +25,32 @@ app.post("/analyze", async (req, res) => {
     let prompt;
 
     if (profile && profile.weight && profile.height) {
-      prompt = `
-KÄYTTÄJÄN TIEDOT:
+      // 🔹 Rakenna profiilin kuvaus dynaamisesti
+      let profileText = `KÄYTTÄJÄN TERVEYSPROFIILI:
 - Paino: ${profile.weight} kg
-- Pituus: ${profile.height} cm
-- Tavoite: ${profile.goal ?? "ei asetettu"}
-- Aikajänne: ${profile.timeframe ?? "ei asetettu"} kuukautta
+- Pituus: ${profile.height} cm`;
+
+      if (profile.goal) {
+        profileText += `\n- Tavoite: ${profile.goal}`;
+        
+        if (profile.goal === "laihdutus" && profile.targetWeight) {
+          profileText += `\n  → Tavoitepaino: ${profile.targetWeight} kg`;
+        } else if (profile.goal === "lihasmassa" && profile.targetMuscle) {
+          profileText += `\n  → Tavoite lihasmassa: ${profile.targetMuscle} kg`;
+        }
+      }
+
+      if (profile.timeframe) {
+        profileText += `\n- Aikajänne: ${profile.timeframe} kuukautta`;
+      }
+
+      if (profile.startDate || profile.endDate) {
+        if (profile.startDate) profileText += `\n- Alkamispäivä: ${profile.startDate}`;
+        if (profile.endDate) profileText += `\n- Päättymispäivä: ${profile.endDate}`;
+      }
+
+      prompt = `
+${profileText}
 
 TUOTTEEN OCR-TEKSTI:
 """
@@ -38,12 +58,15 @@ ${ocrText}
 """
 
 TEHTÄVÄ:
-1. Arvioi päivittäinen energiantarve (BMR + kevyt aktiivisuus).
-2. Huomioi käyttäjän tavoite.
-3. Arvioi kuinka paljon tuotetta sopii:
-- kerralla
-- päivän aikana
-- viikon aikana
+1. Laske käyttäjän päivittäinen energiantarve (BMR + kevyt aktiivisuus).
+2. Analysoi tuotetta suhteessa käyttäjän tavoitteisiin:
+   - Jos laihdutus: onko tuote sopiva painonpudotukseen?
+   - Jos ylläpito: sopiiko tuote normaaliin ruokavalioon?
+   - Jos lihasmassa: tukeeko tuote lihaksiston kasvua?
+3. Suosittele:
+   - Sopiva annoskoko (g/ml)
+   - Kuinka usein tuotetta voi nauttia
+   - Terveellisyysluokka
 
 PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA:
 
@@ -52,12 +75,10 @@ PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA:
 - 🟢 terveellinen  
   🟡 kohtalainen  
   🔴 satunnaisesti nautittava  
-  👉 Käytä AINOASTAAN valitun luokan emojia ja nimeä.  
-  👉 Älä listaa muita vaihtoehtoja.
-- 📆 Kuinka usein: X
+- 📆 Kuinka usein: X kertaa viikossa / päivässä
 
-📌 PERUSTELU LYHYESTI:
-Yksi perustelu.
+📌 PERUSTELU:
+Yksi tai kaksi perusteltua lausetta jotka ottavat huomioon käyttäjän tavoitteen.
 
 🎯 JOHTOPÄÄTÖS  
 Yksi selkeä lause.
