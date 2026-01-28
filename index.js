@@ -57,31 +57,70 @@ TUOTTEEN OCR-TEKSTI:
 ${ocrText}
 """
 
-TEHTÄVÄ:
-1. Laske käyttäjän päivittäinen energiantarve (BMR + kevyt aktiivisuus).
-2. Analysoi tuotetta suhteessa käyttäjän tavoitteisiin:
-   - Jos laihdutus: onko tuote sopiva painonpudotukseen?
-   - Jos ylläpito: sopiiko tuote normaaliin ruokavalioon?
-   - Jos lihasmassa: tukeeko tuote lihaksiston kasvua?
-3. Suosittele:
-   - Sopiva annoskoko (g/ml)
-   - Kuinka usein tuotetta voi nauttia
-   - Terveellisyysluokka
+TEHTÄVÄSI ON ANALYSOIDA RUOKATUOTE YKSILÖLLISESTI KÄYTTÄJÄN PROFIILIN PERUSTEELLA.
 
-PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA:
+KÄYTTÄJÄN TIEDOT:
+- Paino: {{weight}} kg
+- Pituus: {{height}} cm
+- Tavoite: {{goal}} (laihdutus / ylläpito / lihasmassa)
+- Tavoitepaino tai lihasmassa: {{targetWeightOrMuscle}} kg (jos annettu)
+- Aikaväli: {{timeframe}} kuukautta
+- Alkupäivä: {{startDate}}
+- Loppupäivä: {{endDate}}
+
+TOIMI AINA NÄIN:
+
+1️⃣MÄÄRITÄ ENERGIASTRATEGIA VAIN KÄYTTÄJÄN VALITSEMAN TAVOITTEEN PERUSTEELLA:
+
+JOS tavoite = "laihdutus":
+- Käytä päivittäistä energiavajetta 300–500 kcal
+- ÄLÄ ehdota energiatasausta tai ylijäämää
+
+JOS tavoite = "ylläpito":
+- Käytä energiatasausta (0 kcal vaje / ylijäämä)
+- ÄLÄ ehdota kalorivajetta tai ylijäämää
+
+JOS tavoite = "lihasmassa":
+- Käytä päivittäistä energian ylijäämää 250–400 kcal
+- ÄLÄ ehdota kalorivajetta tai ylläpitoa
+
+⚠️ SÄÄNNÖT:
+- ÄLÄ analysoi, mainitse tai vertaile muita tavoitteita
+- Käytä vain käyttäjän valitsemaa tavoitetta koko analyysissä
+
+2️⃣ ANALYSOI TUOTE:
+- Kaloritiheys
+- Proteiinipitoisuus
+- Sokerit ja rasvat
+- Kuinka hyvin tuote tukee käyttäjän valittua tavoitetta
+
+3️⃣ ANNA KONKREETTINEN SUOSITUS:
+- Annoskoko grammoina tai millilitroina
+- Kuinka usein tuotetta voi käyttää tavoitteen puitteissa
+- Luokittele tuote terveellisyysasteikolla:
+  🟢 terveellinen
+  🟡 kohtalainen
+  🔴 vain satunnaiseen käyttöön
+
+⚠️ TÄRKEÄÄ:
+- ÄLÄ anna yleisiä neuvoja
+- ÄLÄ käytä sanoja "yleisesti", "riippuu" tai "muissa tapauksissa"
+- Annoskoko ja käyttötiheys on aina sidottava käyttäjän tavoitteeseen ja aikaväliin
+- Jos tuote hidastaa tavoitetta, rajoita käyttö selkeästi
+
+PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA (ÄLÄ LISÄÄ MITÄÄN MUUTA):
 
 👤 SINULLE SOPIVA MÄÄRÄ:
 - 🍽 Suositeltu annos: X g / ml
-- 🟢 terveellinen  
-  🟡 kohtalainen  
-  🔴 satunnaisesti nautittava  
+- 🟢 / 🟡 / 🔴
 - 📆 Kuinka usein: X kertaa viikossa / päivässä
 
 📌 PERUSTELU:
-Yksi tai kaksi perusteltua lausetta jotka ottavat huomioon käyttäjän tavoitteen.
+1–2 lausetta, joissa mainitaan käyttäjän tavoite ja aikaväli.
 
-🎯 JOHTOPÄÄTÖS  
-Yksi selkeä lause.
+🎯 JOHTOPÄÄTÖS:
+Yksi selkeä ja suora lause.
+
 `;
     } else {
       // 🔹 Jos profiilia ei ole, käytä normaalia ravintoarvopromptia
