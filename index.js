@@ -252,6 +252,11 @@ YLEISET LINJAT:
 📝 ARVIO  
 🟢 / 🟡 / 🔴 (VALITSE VAIN YKSI)
 
+👉 Palauta luokka YHDESSÄ lyhyen selityksen kanssa (1–2 lausetta).  
+Esim. "🟢 Terveellinen – tasapainoinen koostumus, hyvä proteiinipitoisuus, vähän sokeria."
+- Sisällytä aina perustelu: proteiini, sokeri, rasva, lisäaineet, vitamiinit, mikä relevanttia.
+- Älä käytä pelkkää emojia, vaan kirjoita selitys selkeästi käyttäjälle.
+
 ---
 
 🎯 JOHTOPÄÄTÖS  
