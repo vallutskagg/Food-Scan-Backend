@@ -292,6 +292,8 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
 });
 
 
-app.listen(3000, () => {
-  console.log("Backend käynnissä");
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Backend käynnissä portissa ${PORT}`);
 });
