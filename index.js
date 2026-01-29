@@ -297,6 +297,10 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
 });
 
 
-app.listen(3000, () => {
-  console.log("Backend käynnissä");
+const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0'; // Kuuntelee kaikilta verkon osoitteilta
+
+app.listen(PORT, HOST, () => {
+  console.log(`Backend käynnissä osoitteessa http://${HOST}:${PORT}`);
 });
+
