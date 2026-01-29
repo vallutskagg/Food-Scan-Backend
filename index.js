@@ -133,29 +133,112 @@ ${ocrText}
 """
 
 TEHTÄVÄ:
-1️⃣ Tunnista tekstistä ravintoarvot per 100 g / 100 ml TAI per annos:
-  🍽️ Energia (kcal)  
-  🥑 Rasva (g)  
-  🍬 Joista sokerit (g)  
-  🍗 Proteiini (g)  
-  🧂 Suola (g)  
+
+1️⃣ TUNNISTA RAVINTOARVOT TEKSTISTÄ:
+Tunnista ravintoarvot per 100 g / 100 ml TAI per annos.
+
+Yritä ensisijaisesti löytää:
+🔥 Energia (kcal)  
+🥑 Rasva (g)  
+🍬 Joista sokerit (g)  
+🍗 Proteiini (g)  
+🧂 Suola (g)
+
+HYVÄKSY:
+- Synonyymit (energia = kcal / kJ → muunna kcaliksi)
+- Natrium → muunna suolaksi (suola = natrium × 2.5)
 
 ---
 
-2️⃣ Jos pakkauksessa on mainittu:
-   - koko (esim. 250 g, 330 ml)
-   - annosten määrä  
-   → LASKE KOKO TUOTTEEN RAVINTOARVOT YHTEENSÄ.
+2️⃣ TUNNISTA TUOTETYYPPI:
+- JOS tuote on juoma → käytä ml
+- JOS tuote on kiinteä → käytä g
+
+JOS tuote on juoma:
+- Arvioi sokeripitoisuus erityisen tarkasti
+- Runsassokerinen juoma → yleensä 🔴
 
 ---
 
-3️⃣ Jos jokin tieto puuttuu tai on epäselvä:
-- tee paras mahdollinen arvio
-- mainitse epävarmuus lyhyesti
+3️⃣ LASKE KOKO TUOTTEEN RAVINTOARVOT:
+
+JOS pakkauksessa on mainittu:
+- tuotteen kokonaiskoko (esim. 250 g / 330 ml)
+- TAI annosten määrä
+
+→ Laske koko tuotteen ravintoarvot yhteensä.
+
+JOS vain annoskoko on saatavilla:
+- Käytä sitä koko tuotteen arviona.
 
 ---
 
-4️⃣ Palauta tulos SELKEÄSTI seuraavassa muodossa:
+4️⃣ PROTEIINIPAINOTUS:
+
+JOS proteiinia ≥ 15 g / annos:
+- Paranna terveellisyysluokitusta yhdellä tasolla,
+  ELLEI sokeria ole runsaasti (>10 g / annos).
+
+---
+
+5️⃣ VITAMIINI- JA KIVENNÄISAINEANALYYSI (EHDOLLINEN):
+
+JOS tuotteessa on merkittäviä määriä vitamiineja tai kivennäisaineita:
+- Mainitse ne lyhyesti ARVIO-osiossa
+
+HYÖDYLLISIÄ ESIMERKKEJÄ:
+- D-vitamiini
+- B-vitamiinit
+- Magnesium
+- Kalsium
+
+SÄÄNTÖ:
+- Vitamiinit voivat parantaa arviota,
+  mutta NE EIVÄT kumoa korkeaa sokeria tai energiamäärää.
+
+---
+
+6️⃣ LISÄAINEANALYYSI (TARVITTAESSA):
+
+JOS tuotteessa on:
+- Keinotekoisia makeutusaineita
+- Väriaineita
+- Emulgointiaineita
+- Kofeiinia, tauriinia tai muita stimulantteja
+- Useita E-koodeja
+
+→ Mainitse tämä ARVIO-osiossa
+→ Runsas prosessointi tai stimulantit → rajoita käyttöä
+
+---
+
+7️⃣ EPÄVARMUUS- JA OCR-FALLBACK:
+
+JOS ravintoarvoja ei voi tunnistaa luotettavasti:
+- Palauta seuraava arvio:
+  "Ei luotettavaa ravintoarvotietoa"
+- ÄLÄ arvaa puuttuvia arvoja
+- ÄLÄ laske kokonaisarvoja
+
+---
+
+8️⃣ TERVEELLISYYSLUOKAN MÄÄRITYS:
+
+Perusta luokitus ensisijaisesti:
+- kokonaisenergiamäärään
+- sokerin määrään
+- rasvan laatuun ja määrään
+- proteiinipitoisuuteen
+- lisäaineisiin ja prosessointiin
+
+YLEISET LINJAT:
+- Runsassokerinen juoma tai stimuloiva energiajuoma → 🔴
+- Tasapainoinen perustuote → 🟡
+- Ravintorikas ja vähän prosessoitu → 🟢
+
+---
+
+9️⃣ PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA:
 
 📊 RAVINTOARVOT YHTEENSÄ  
 🔥 Energia: X kcal  
@@ -167,14 +250,7 @@ TEHTÄVÄ:
 ---
 
 📝 ARVIO  
-Terveellisyysluokka (VALITSE VAIN YKSI):
-
-🟢 terveellinen  
-🟡 kohtalainen  
-🔴 satunnaisesti nautittava  
-
-👉 Käytä AINOASTAAN valitun luokan emojia ja nimeä.  
-👉 Älä listaa muita vaihtoehtoja.
+🟢 / 🟡 / 🔴 (VALITSE VAIN YKSI)
 
 ---
 
