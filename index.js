@@ -293,7 +293,9 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
 
 
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0'; // Kuuntelee kaikilta verkon osoitteilta
 
-app.listen(PORT, () => {
-  console.log(`Backend käynnissä portissa ${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Backend käynnissä osoitteessa http://${HOST}:${PORT}`);
 });
+
