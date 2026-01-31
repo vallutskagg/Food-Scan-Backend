@@ -3,12 +3,9 @@ import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
-
-
 const app = express();
 app.use(cors());
 app.use(express.json());
-
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
@@ -20,110 +17,48 @@ app.post("/analyze", async (req, res) => {
       return res.status(400).json({ error: "OCR-teksti puuttuu" });
     }
 
-    // 🔹 Jos profiili käytössä, käytä "personalisoitua" promptia
-    let prompt;
+    /* ================= PROMPT ================= */
 
-    if (profile && profile.weight && profile.height) {
-      // 🔹 Rakenna profiilin kuvaus dynaamisesti
-      let profileText = `KÄYTTÄJÄN TERVEYSPROFIILI:
+    let prompt = `
+OLET TAUSTALLA TOIMIVA ANALYYSIMOOTTORI.
+
+⚠️ ERITTÄIN TÄRKEÄT SÄÄNNÖT:
+- KÄYTTÄJÄ NÄKEE VAIN JSON-KENTÄN "result"
+- ÄLÄ KOSKAAN lisää ohjeita, sääntöjä, JSON-rakennetta tai teknistä tekstiä "result"-kenttään
+- "result" on PUHDASTA käyttäjälle tarkoitettua analyysitekstiä
+- "products" ja "totalCalories" ovat vain sovelluksen sisäiseen käyttöön
+- ÄLÄ mainitse sanoja: JSON, kenttä, ohje, prompt, analyysi, malli
+
+PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
+
+{
+  "result": "<vain käyttäjälle tarkoitettu teksti>",
+  "products": [
+    { "name": "Tuotteen nimi", "calories": 150 }
+  ],
+  "totalCalories": 150
+}
+`;
+
+    /* ================= PROFILE PROMPT ================= */
+
+    if (profile?.weight && profile?.height) {
+      prompt += `
+
+KÄYTTÄJÄN TERVEYSPROFIILI:
 - Paino: ${profile.weight} kg
-- Pituus: ${profile.height} cm`;
-
-      if (profile.goal) {
-        profileText += `\n- Tavoite: ${profile.goal}`;
-        
-        if (profile.goal === "laihdutus" && profile.targetWeight) {
-          profileText += `\n  → Tavoitepaino: ${profile.targetWeight} kg`;
-        } else if (profile.goal === "lihasmassa" && profile.targetMuscle) {
-          profileText += `\n  → Tavoite lihasmassa: ${profile.targetMuscle} kg`;
-        }
-      }
-
-      if (profile.timeframe) {
-        profileText += `\n- Aikajänne: ${profile.timeframe} kuukautta`;
-      }
-
-      if (profile.startDate || profile.endDate) {
-        if (profile.startDate) profileText += `\n- Alkamispäivä: ${profile.startDate}`;
-        if (profile.endDate) profileText += `\n- Päättymispäivä: ${profile.endDate}`;
-      }
-
-      prompt = `
-${profileText}
+- Pituus: ${profile.height} cm
+- Tavoite: ${profile.goal}
+${profile.targetWeight ? `- Tavoitepaino: ${profile.targetWeight} kg` : ""}
+${profile.targetMuscle ? `- Tavoite lihasmassa: ${profile.targetMuscle} kg` : ""}
+${profile.timeframe ? `- Aikajänne: ${profile.timeframe} kuukautta` : ""}
 
 TUOTTEEN OCR-TEKSTI:
 """
 ${ocrText}
 """
 
-TEHTÄVÄSI ON ANALYSOIDA RUOKATUOTE YKSILÖLLISESTI KÄYTTÄJÄN PROFIILIN PERUSTEELLA.
-
-KÄYTTÄJÄN TIEDOT:
-- Paino: {{weight}} kg
-- Pituus: {{height}} cm
-- Tavoite: {{goal}} (laihdutus / ylläpito / lihasmassa)
-- Tavoitepaino tai lihasmassa: {{targetWeightOrMuscle}} kg (jos annettu)
-- Aikaväli: {{timeframe}} kuukautta
-- Alkupäivä: {{startDate}}
-- Loppupäivä: {{endDate}}
-
-TOIMI AINA NÄIN:
-
-1️⃣MÄÄRITÄ ENERGIASTRATEGIA VAIN KÄYTTÄJÄN VALITSEMAN TAVOITTEEN PERUSTEELLA:
-
-JOS tavoite = "laihdutus":
-- Käytä päivittäistä energiavajetta 300–500 kcal
-- ÄLÄ ehdota energiatasausta tai ylijäämää
-
-JOS tavoite = "ylläpito":
-- Käytä energiatasausta (0 kcal vaje / ylijäämä)
-- ÄLÄ ehdota kalorivajetta tai ylijäämää
-
-JOS tavoite = "lihasmassa":
-- Käytä päivittäistä energian ylijäämää 250–400 kcal
-- ÄLÄ ehdota kalorivajetta tai ylläpitoa
-
-⚠️ SÄÄNNÖT:
-- ÄLÄ analysoi, mainitse tai vertaile muita tavoitteita
-- Käytä vain käyttäjän valitsemaa tavoitetta koko analyysissä
-
-2️⃣ ANALYSOI TUOTE:
-- Kaloritiheys
-- Proteiinipitoisuus
-- Sokerit ja rasvat
-- Kuinka hyvin tuote tukee käyttäjän valittua tavoitetta
-
-3️⃣ ANNA KONKREETTINEN SUOSITUS:
-- Annoskoko grammoina tai millilitroina
-- Kuinka usein tuotetta voi käyttää tavoitteen puitteissa
-- Luokittele tuote terveellisyysasteikolla:
-  🟢 terveellinen
-  🟡 kohtalainen
-  🔴 vain satunnaiseen käyttöön
-
-⚠️ TÄRKEÄÄ:
-- ÄLÄ anna yleisiä neuvoja
-- ÄLÄ käytä sanoja "yleisesti", "riippuu" tai "muissa tapauksissa"
-- Annoskoko ja käyttötiheys on aina sidottava käyttäjän tavoitteeseen ja aikaväliin
-- Jos tuote hidastaa tavoitetta, rajoita käyttö selkeästi
-
-      PALAUTA TULOS TÄSMÄLLEEN JSON-MUODOSSA (ÄLÄ LISÄÄ MITÄÄN MUUTA):
-
-{
-  "result": "analyysiteksti tähän...",
-  "products": [
-    { "name": "Tuotteen nimi", "calories": 150 }
-  ],
-  "totalCalories": 150
-}
-
-SÄÄNNÖT JSONIIN:
-- "result" = alla määritelty analyysiteksti täsmälleen sellaisenaan
-- "products" = tunnista kaikki tuotteet OCR-tekstistä ja arvioi niiden kokonaiskalorit
-- "totalCalories" = products-taulukon kalorien summa
-- Jos kyseessä on energiajuoma, lisää { "name": "Energiajuoma", "calories": 150 } products-taulukkoon
-
-ANALYYSITEKSTI (käytä tämä "result"-kenttään):
+KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 
 👤 SINULLE SOPIVA MÄÄRÄ:
 - 🍽 Suositeltu annos: X g / ml
@@ -135,141 +70,17 @@ ANALYYSITEKSTI (käytä tämä "result"-kenttään):
 
 🎯 JOHTOPÄÄTÖS:
 Yksi selkeä ja suora lause.
-
 `;
     } else {
-      // 🔹 Jos profiilia ei ole, käytä normaalia ravintoarvopromptia
-      prompt = `
-Seuraava teksti on luettu elintarvikepakkauksesta OCR:llä.
+      /* ================= BASIC PROMPT ================= */
+      prompt += `
 
-TEKSTI:
+TUOTTEEN OCR-TEKSTI:
 """
 ${ocrText}
 """
 
-TEHTÄVÄ:
-
-1️⃣ TUNNISTA RAVINTOARVOT TEKSTISTÄ:
-Tunnista ravintoarvot per 100 g / 100 ml TAI per annos.
-
-Yritä ensisijaisesti löytää:
-🔥 Energia (kcal)  
-🥑 Rasva (g)  
-🍬 Joista sokerit (g)  
-🍗 Proteiini (g)  
-🧂 Suola (g)
-
-HYVÄKSY:
-- Synonyymit (energia = kcal / kJ → muunna kcaliksi)
-- Natrium → muunna suolaksi (suola = natrium × 2.5)
-
----
-
-2️⃣ TUNNISTA TUOTETYYPPI:
-- JOS tuote on juoma → käytä ml
-- JOS tuote on kiinteä → käytä g
-
-JOS tuote on juoma:
-- Arvioi sokeripitoisuus erityisen tarkasti
-- Runsassokerinen juoma → yleensä 🔴
-
----
-
-3️⃣ LASKE KOKO TUOTTEEN RAVINTOARVOT:
-
-JOS pakkauksessa on mainittu:
-- tuotteen kokonaiskoko (esim. 250 g / 330 ml)
-- TAI annosten määrä
-
-→ Laske koko tuotteen ravintoarvot yhteensä.
-
-JOS vain annoskoko on saatavilla:
-- Käytä sitä koko tuotteen arviona.
-
----
-
-4️⃣ PROTEIINIPAINOTUS:
-
-JOS proteiinia ≥ 15 g / annos:
-- Paranna terveellisyysluokitusta yhdellä tasolla,
-  ELLEI sokeria ole runsaasti (>10 g / annos).
-
----
-
-5️⃣ VITAMIINI- JA KIVENNÄISAINEANALYYSI (EHDOLLINEN):
-
-JOS tuotteessa on merkittäviä määriä vitamiineja tai kivennäisaineita:
-- Mainitse ne lyhyesti ARVIO-osiossa
-
-HYÖDYLLISIÄ ESIMERKKEJÄ:
-- D-vitamiini
-- B-vitamiinit
-- Magnesium
-- Kalsium
-
-SÄÄNTÖ:
-- Vitamiinit voivat parantaa arviota,
-  mutta NE EIVÄT kumoa korkeaa sokeria tai energiamäärää.
-
----
-
-6️⃣ LISÄAINEANALYYSI (TARVITTAESSA):
-
-JOS tuotteessa on:
-- Keinotekoisia makeutusaineita
-- Väriaineita
-- Emulgointiaineita
-- Kofeiinia, tauriinia tai muita stimulantteja
-- Useita E-koodeja
-
-→ Mainitse tämä ARVIO-osiossa
-→ Runsas prosessointi tai stimulantit → rajoita käyttöä
-
----
-
-7️⃣ EPÄVARMUUS- JA OCR-FALLBACK:
-
-JOS ravintoarvoja ei voi tunnistaa luotettavasti:
-- Palauta seuraava arvio:
-  "Ei luotettavaa ravintoarvotietoa"
-- ÄLÄ arvaa puuttuvia arvoja
-- ÄLÄ laske kokonaisarvoja
-
----
-
-8️⃣ TERVEELLISYYSLUOKAN MÄÄRITYS:
-
-Perusta luokitus ensisijaisesti:
-- kokonaisenergiamäärään
-- sokerin määrään
-- rasvan laatuun ja määrään
-- proteiinipitoisuuteen
-- lisäaineisiin ja prosessointiin
-
-YLEISET LINJAT:
-- Runsassokerinen juoma tai stimuloiva energiajuoma → 🔴
-- Tasapainoinen perustuote → 🟡
-- Ravintorikas ja vähän prosessoitu → 🟢
-
----
-
-9️⃣ PALAUTA TULOS TÄSMÄLLEEN JSON-MUODOSSA (ÄLÄ LISÄÄ MITÄÄN MUUTA):
-
-{
-  "result": "analyysiteksti tähän...",
-  "products": [
-    { "name": "Tuotteen nimi", "calories": 150 }
-  ],
-  "totalCalories": 150
-}
-
-SÄÄNNÖT JSONIIN:
-- "result" = alla määritelty analyysiteksti täsmälleen sellaisenaan
-- "products" = tunnista kaikki tuotteet OCR-tekstistä ja arvioi niiden kokonaiskalorit
-- "totalCalories" = products-taulukon kalorien summa
-- Jos kyseessä on energiajuoma, lisää { "name": "Energiajuoma", "calories": 150 } products-taulukkoon
-
-ANALYYSITEKSTI (käytä tämä "result"-kenttään):
+KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 
 🟰 RAVINTOARVOT YHTEENSÄ  
 🔥 Energia: X kcal  
@@ -278,24 +89,16 @@ ANALYYSITEKSTI (käytä tämä "result"-kenttään):
 🍗 Proteiini: X g  
 🧂 Suola: X g  
 
----
-
 📝 ARVIO  
-🟢 / 🟡 / 🔴 (VALITSE VAIN YKSI)
-
-👉 Palauta luokka YHDESSÄ lyhyen selityksen kanssa (1–2 lausetta).  
-Esim. "🟢 Terveellinen – tasapainoinen koostumus, hyvä proteiinipitoisuus, vähän sokeria."
-- Sisällytä aina perustelu: proteiini, sokeri, rasva, lisäaineet, vitamiinit, mikä relevanttia.
-- Älä käytä pelkkää emojia, vaan kirjoita selitys selkeästi käyttäjälle.
-
----
+🟢 / 🟡 / 🔴 – lyhyt selitys (1–2 lausetta)
 
 🎯 JOHTOPÄÄTÖS  
-Yksi selkeä ja käyttäjälle ymmärrettävä lause.
+Yksi selkeä lause.
 `;
     }
 
-    // 🔹 Lähetä prompt AI:lle
+    /* ================= GEMINI CALL ================= */
+
     const response = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
       {
@@ -305,22 +108,23 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
           "X-goog-api-key": API_KEY,
         },
         body: JSON.stringify({
-          contents: [
-            { role: "user", parts: [{ text: prompt }] },
-          ],
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
         }),
       }
     );
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`API-virhe: ${text}`);
+      throw new Error(text);
     }
 
     const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const rawText =
+      data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
-    let payload = null;
+    /* ================= JSON PARSING ================= */
+
+    let payload;
     try {
       payload = JSON.parse(rawText);
     } catch {
@@ -328,30 +132,44 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
     }
 
     if (payload && typeof payload === "object") {
-      const safeProducts = Array.isArray(payload.products) ? payload.products : [];
-      const safeTotal = Number(payload.totalCalories);
+      const products = Array.isArray(payload.products)
+        ? payload.products
+        : [];
+
+      const totalCalories =
+        Number.isFinite(payload.totalCalories)
+          ? payload.totalCalories
+          : products.reduce(
+              (sum, p) => sum + (Number(p?.calories) || 0),
+              0
+            );
+
       return res.json({
-        result: payload.result ?? "Analyysi epäonnistui",
-        products: safeProducts,
-        totalCalories: Number.isFinite(safeTotal)
-          ? safeTotal
-          : safeProducts.reduce((sum, item) => sum + (Number(item?.calories) || 0), 0),
+        result:
+          typeof payload.result === "string"
+            ? payload.result.trim()
+            : "Analyysi epäonnistui",
+        products,
+        totalCalories,
       });
     }
 
-    const result = rawText || "Analyysi epäonnistui";
-    res.json({ result, products: [], totalCalories: 0 });
+    /* ================= FALLBACK ================= */
+
+    res.json({
+      result: rawText || "Analyysi epäonnistui",
+      products: [],
+      totalCalories: 0,
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message || "Jokin meni pieleen" });
+    res.status(500).json({ error: "Jokin meni pieleen" });
   }
 });
 
+/* ================= SERVER ================= */
 
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0'; // Kuuntelee kaikilta verkon osoitteilta
-
-app.listen(PORT, HOST, () => {
-  console.log(`Backend käynnissä osoitteessa http://${HOST}:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Backend käynnissä portissa ${PORT}`);
 });
-
