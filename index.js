@@ -1,6 +1,6 @@
-import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import express from "express";
 dotenv.config();
 
 const app = express();
@@ -124,9 +124,24 @@ Yksi selkeä lause.
 
     /* ================= JSON PARSING ================= */
 
+    // Puhdista vastaus: poista ```json ja ``` merkit
+    let cleanedText = rawText.trim();
+    if (cleanedText.startsWith("```json")) {
+      cleanedText = cleanedText.replace(/^```json\s*/i, "");
+    } else if (cleanedText.startsWith("```")) {
+      cleanedText = cleanedText.replace(/^```\s*/, "");
+    }
+    if (cleanedText.endsWith("```")) {
+      cleanedText = cleanedText.replace(/\s*```$/, "");
+    }
+
+    // Yritä etsiä JSON-osuus jos on muuta tekstiä
+    const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+    const textToParse = jsonMatch ? jsonMatch[0] : cleanedText;
+
     let payload;
     try {
-      payload = JSON.parse(rawText);
+      payload = JSON.parse(textToParse);
     } catch {
       payload = null;
     }
@@ -156,8 +171,9 @@ Yksi selkeä lause.
 
     /* ================= FALLBACK ================= */
 
+    // ÄLÄ näytä raakadataa käyttäjälle
     res.json({
-      result: rawText || "Analyysi epäonnistui",
+      result: "❌ Analyysi epäonnistui. Yritä uudelleen tai skannaa selkeämpi kuva.",
       products: [],
       totalCalories: 0,
     });
