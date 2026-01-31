@@ -9,82 +9,14 @@ app.use(express.json());
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
-/* ================= BARCODE LOOKUP ================= */
-async function fetchProductByBarcode(barcode) {
-  try {
-    const response = await fetch(
-      `https://world.openfoodfacts.org/api/v2/product/${barcode}.json`
-    );
-    
-    if (!response.ok) {
-      return null;
-    }
-
-    const data = await response.json();
-    
-    if (data.status === 0 || !data.product) {
-      return null; // Tuotetta ei löytynyt
-    }
-
-    const product = data.product;
-    
-    // Rakenna tuotetiedot
-    const productInfo = {
-      name: product.product_name || "Tuntematon tuote",
-      brands: product.brands || "",
-      quantity: product.quantity || "",
-      categories: product.categories || "",
-      nutriments: product.nutriments || {},
-      ingredients_text: product.ingredients_text || "",
-      nutriscore_grade: product.nutriscore_grade || "",
-      nova_group: product.nova_group || "",
-      ecoscore_grade: product.ecoscore_grade || "",
-    };
-
-    return productInfo;
-  } catch (error) {
-    console.error("Viivakoodin haku epäonnistui:", error);
-    return null;
-  }
-}
-
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
   try {
-    let { ocrText, barcode, profile } = req.body;
+    const { ocrText, profile } = req.body;
 
-    /* ================= BARCODE LOOKUP ================= */
-    // Jos viivakoodi annettu, hae tuotetiedot ja muunna tekstiksi
-    if (barcode) {
-      const product = await fetchProductByBarcode(barcode);
-      
-      if (!product) {
-        return res.json({ notFound: true });
-      }
-
-      // Muotoile viivakoodin tiedot tekstiksi, joka käsitellään kuin OCR-teksti
-      ocrText = `
-TUOTE: ${product.name}${product.brands ? ` (${product.brands})` : ""}
-${product.quantity ? `MÄÄRÄ: ${product.quantity}` : ""}
-
-RAVINTOARVOT (per 100g):
-Energia: ${product.nutriments.energy_value || product.nutriments["energy-kcal"] || "?"} kcal
-Rasva: ${product.nutriments.fat || "?"} g
-Joista tyydyttynyttä: ${product.nutriments["saturated-fat"] || "?"} g
-Hiilihydraatit: ${product.nutriments.carbohydrates || "?"} g
-Joista sokereita: ${product.nutriments.sugars || "?"} g
-Proteiini: ${product.nutriments.proteins || "?"} g
-Suola: ${product.nutriments.salt || "?"} g
-${product.nutriments.fiber ? `Kuitu: ${product.nutriments.fiber} g` : ""}
-
-${product.nutriscore_grade ? `NUTRI-SCORE: ${product.nutriscore_grade.toUpperCase()}` : ""}
-${product.ingredients_text ? `\nAINESOSAT: ${product.ingredients_text}` : ""}
-`.trim();
-    }
-
-    /* ================= OCR/BARCODE ANALYSIS ================= */
+    /* ================= OCR ANALYSIS ================= */
     if (!ocrText) {
-      return res.status(400).json({ error: "OCR-teksti tai viivakoodi puuttuu" });
+      return res.status(400).json({ error: "OCR-teksti puuttuu" });
     }
 
     let prompt = `
