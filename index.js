@@ -9,15 +9,83 @@ app.use(express.json());
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
-app.post("/analyze", async (req, res) => {
+/* ================= BARCODE LOOKUP ================= */
+async function fetchProductByBarcode(barcode) {
   try {
-    const { ocrText, profile } = req.body;
-
-    if (!ocrText) {
-      return res.status(400).json({ error: "OCR-teksti puuttuu" });
+    const response = await fetch(
+      `https://world.openfoodfacts.org/api/v2/product/${barcode}.json`
+    );
+    
+    if (!response.ok) {
+      return null;
     }
 
-    /* ================= PROMPT ================= */
+    const data = await response.json();
+    
+    if (data.status === 0 || !data.product) {
+      return null; // Tuotetta ei löytynyt
+    }
+
+    const product = data.product;
+    
+    // Rakenna tuotetiedot
+    const productInfo = {
+      name: product.product_name || "Tuntematon tuote",
+      brands: product.brands || "",
+      quantity: product.quantity || "",
+      categories: product.categories || "",
+      nutriments: product.nutriments || {},
+      ingredients_text: product.ingredients_text || "",
+      nutriscore_grade: product.nutriscore_grade || "",
+      nova_group: product.nova_group || "",
+      ecoscore_grade: product.ecoscore_grade || "",
+    };
+
+    return productInfo;
+  } catch (error) {
+    console.error("Viivakoodin haku epäonnistui:", error);
+    return null;
+  }
+}
+
+/* ================= ANALYZE ENDPOINT ================= */
+app.post("/analyze", async (req, res) => {
+  try {
+    let { ocrText, barcode, profile } = req.body;
+
+    /* ================= BARCODE LOOKUP ================= */
+    // Jos viivakoodi annettu, hae tuotetiedot ja muunna tekstiksi
+    if (barcode) {
+      const product = await fetchProductByBarcode(barcode);
+      
+      if (!product) {
+        return res.json({ notFound: true });
+      }
+
+      // Muotoile viivakoodin tiedot tekstiksi, joka käsitellään kuin OCR-teksti
+      ocrText = `
+TUOTE: ${product.name}${product.brands ? ` (${product.brands})` : ""}
+${product.quantity ? `MÄÄRÄ: ${product.quantity}` : ""}
+
+RAVINTOARVOT (per 100g):
+Energia: ${product.nutriments.energy_value || product.nutriments["energy-kcal"] || "?"} kcal
+Rasva: ${product.nutriments.fat || "?"} g
+Joista tyydyttynyttä: ${product.nutriments["saturated-fat"] || "?"} g
+Hiilihydraatit: ${product.nutriments.carbohydrates || "?"} g
+Joista sokereita: ${product.nutriments.sugars || "?"} g
+Proteiini: ${product.nutriments.proteins || "?"} g
+Suola: ${product.nutriments.salt || "?"} g
+${product.nutriments.fiber ? `Kuitu: ${product.nutriments.fiber} g` : ""}
+
+${product.nutriscore_grade ? `NUTRI-SCORE: ${product.nutriscore_grade.toUpperCase()}` : ""}
+${product.ingredients_text ? `\nAINESOSAT: ${product.ingredients_text}` : ""}
+`.trim();
+    }
+
+    /* ================= OCR/BARCODE ANALYSIS ================= */
+    if (!ocrText) {
+      return res.status(400).json({ error: "OCR-teksti tai viivakoodi puuttuu" });
+    }
 
     let prompt = `
 OLET TAUSTALLA TOIMIVA ANALYYSIMOOTTORI.
@@ -39,8 +107,6 @@ PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
   "totalCalories": 150
 }
 `;
-
-    /* ================= PROFILE PROMPT ================= */
 
     if (profile?.weight && profile?.height) {
       prompt += `
@@ -72,7 +138,6 @@ KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 Yksi selkeä ja suora lause.
 `;
     } else {
-      /* ================= BASIC PROMPT ================= */
       prompt += `
 
 TUOTTEEN OCR-TEKSTI:
@@ -97,8 +162,6 @@ Yksi selkeä lause.
 `;
     }
 
-    /* ================= GEMINI CALL ================= */
-
     const response = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
       {
@@ -119,12 +182,8 @@ Yksi selkeä lause.
     }
 
     const data = await response.json();
-    const rawText =
-      data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
-    /* ================= JSON PARSING ================= */
-
-    // Puhdista vastaus: poista ```json ja ``` merkit
     let cleanedText = rawText.trim();
     if (cleanedText.startsWith("```json")) {
       cleanedText = cleanedText.replace(/^```json\s*/i, "");
@@ -135,7 +194,6 @@ Yksi selkeä lause.
       cleanedText = cleanedText.replace(/\s*```$/, "");
     }
 
-    // Yritä etsiä JSON-osuus jos on muuta tekstiä
     const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
     const textToParse = jsonMatch ? jsonMatch[0] : cleanedText;
 
@@ -147,26 +205,17 @@ Yksi selkeä lause.
     }
 
     if (payload && typeof payload === "object") {
-      const products = Array.isArray(payload.products)
-        ? payload.products
-        : [];
+      const products = Array.isArray(payload.products) ? payload.products : [];
 
-      const totalCalories =
-        Number.isFinite(payload.totalCalories)
-          ? payload.totalCalories
-          : products.reduce(
-              (sum, p) => sum + (Number(p?.calories) || 0),
-              0
-            );
+      const totalCalories = Number.isFinite(payload.totalCalories)
+        ? payload.totalCalories
+        : products.reduce((sum, p) => sum + (Number(p?.calories) || 0), 0);
 
-      // Generoi AI:n ehdottama tuotteen nimi
       let suggestedName = "";
       if (products.length === 1) {
-        // Jos yksi tuote, käytä sen nimeä
         suggestedName = products[0].name || "";
       } else if (products.length > 1) {
-        // Jos useampi tuote, yhdistä nimet
-        suggestedName = products.map(p => p.name).filter(Boolean).join(", ");
+        suggestedName = products.map((p) => p.name).filter(Boolean).join(", ");
       }
 
       return res.json({
@@ -180,9 +229,6 @@ Yksi selkeä lause.
       });
     }
 
-    /* ================= FALLBACK ================= */
-
-    // ÄLÄ näytä raakadataa käyttäjälle
     res.json({
       result: "❌ Analyysi epäonnistui. Yritä uudelleen tai skannaa selkeämpi kuva.",
       products: [],
@@ -193,8 +239,6 @@ Yksi selkeä lause.
     res.status(500).json({ error: "Jokin meni pieleen" });
   }
 });
-
-/* ================= SERVER ================= */
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
