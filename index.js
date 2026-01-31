@@ -159,6 +159,16 @@ Yksi selkeä lause.
               0
             );
 
+      // Generoi AI:n ehdottama tuotteen nimi
+      let suggestedName = "";
+      if (products.length === 1) {
+        // Jos yksi tuote, käytä sen nimeä
+        suggestedName = products[0].name || "";
+      } else if (products.length > 1) {
+        // Jos useampi tuote, yhdistä nimet
+        suggestedName = products.map(p => p.name).filter(Boolean).join(", ");
+      }
+
       return res.json({
         result:
           typeof payload.result === "string"
@@ -166,6 +176,7 @@ Yksi selkeä lause.
             : "Analyysi epäonnistui",
         products,
         totalCalories,
+        suggestedName,
       });
     }
 
