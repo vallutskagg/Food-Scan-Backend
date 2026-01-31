@@ -12,7 +12,6 @@ app.use(express.json());
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
-
 app.post("/analyze", async (req, res) => {
   try {
     const { ocrText, profile } = req.body;
@@ -108,7 +107,23 @@ JOS tavoite = "lihasmassa":
 - Annoskoko ja käyttötiheys on aina sidottava käyttäjän tavoitteeseen ja aikaväliin
 - Jos tuote hidastaa tavoitetta, rajoita käyttö selkeästi
 
-PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA (ÄLÄ LISÄÄ MITÄÄN MUUTA):
+      PALAUTA TULOS TÄSMÄLLEEN JSON-MUODOSSA (ÄLÄ LISÄÄ MITÄÄN MUUTA):
+
+{
+  "result": "analyysiteksti tähän...",
+  "products": [
+    { "name": "Tuotteen nimi", "calories": 150 }
+  ],
+  "totalCalories": 150
+}
+
+SÄÄNNÖT JSONIIN:
+- "result" = alla määritelty analyysiteksti täsmälleen sellaisenaan
+- "products" = tunnista kaikki tuotteet OCR-tekstistä ja arvioi niiden kokonaiskalorit
+- "totalCalories" = products-taulukon kalorien summa
+- Jos kyseessä on energiajuoma, lisää { "name": "Energiajuoma", "calories": 150 } products-taulukkoon
+
+ANALYYSITEKSTI (käytä tämä "result"-kenttään):
 
 👤 SINULLE SOPIVA MÄÄRÄ:
 - 🍽 Suositeltu annos: X g / ml
@@ -238,7 +253,23 @@ YLEISET LINJAT:
 
 ---
 
-9️⃣ PALAUTA TULOS TÄSMÄLLEEN SEURAAVASSA MUODOSSA:
+9️⃣ PALAUTA TULOS TÄSMÄLLEEN JSON-MUODOSSA (ÄLÄ LISÄÄ MITÄÄN MUUTA):
+
+{
+  "result": "analyysiteksti tähän...",
+  "products": [
+    { "name": "Tuotteen nimi", "calories": 150 }
+  ],
+  "totalCalories": 150
+}
+
+SÄÄNNÖT JSONIIN:
+- "result" = alla määritelty analyysiteksti täsmälleen sellaisenaan
+- "products" = tunnista kaikki tuotteet OCR-tekstistä ja arvioi niiden kokonaiskalorit
+- "totalCalories" = products-taulukon kalorien summa
+- Jos kyseessä on energiajuoma, lisää { "name": "Energiajuoma", "calories": 150 } products-taulukkoon
+
+ANALYYSITEKSTI (käytä tämä "result"-kenttään):
 
 🟰 RAVINTOARVOT YHTEENSÄ  
 🔥 Energia: X kcal  
@@ -287,9 +318,29 @@ Yksi selkeä ja käyttäjälle ymmärrettävä lause.
     }
 
     const data = await response.json();
-    const result = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "Analyysi epäonnistui";
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
-    res.json({ result });
+    let payload = null;
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      payload = null;
+    }
+
+    if (payload && typeof payload === "object") {
+      const safeProducts = Array.isArray(payload.products) ? payload.products : [];
+      const safeTotal = Number(payload.totalCalories);
+      return res.json({
+        result: payload.result ?? "Analyysi epäonnistui",
+        products: safeProducts,
+        totalCalories: Number.isFinite(safeTotal)
+          ? safeTotal
+          : safeProducts.reduce((sum, item) => sum + (Number(item?.calories) || 0), 0),
+      });
+    }
+
+    const result = rawText || "Analyysi epäonnistui";
+    res.json({ result, products: [], totalCalories: 0 });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || "Jokin meni pieleen" });
