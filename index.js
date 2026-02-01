@@ -29,6 +29,16 @@ OLET TAUSTALLA TOIMIVA ANALYYSIMOOTTORI.
 - "products" ja "totalCalories" ovat vain sovelluksen sisäiseen käyttöön
 - ÄLÄ mainitse sanoja: JSON, kenttä, ohje, prompt, analyysi, malli
 
+⚠️ KRIITTINEN SÄÄNTÖ KALOREISTA:
+- KAIKKI kalorit TÄYTYY AINA olla per 100g tai per 100ml muodossa
+- JOS tuote on esim. 500ml ja sisältää 152 kcal yhteensä:
+  → Laske: 152 ÷ (500 ÷ 100) = 30.4 kcal per 100ml
+  → Palauta calories: 30.4
+- JOS ravintotaulukko näyttää jo "per 100g: 520 kcal":
+  → Palauta calories: 520 (sellaisenaan)
+- ÄLÄ KOSKAAN palauta tuotteen kokonaiskaloreja
+- Useamman tuotteen tapauksessa: jokainen calories per 100g/100ml, totalCalories on summa
+
 PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
 
 {
@@ -38,6 +48,8 @@ PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
   ],
   "totalCalories": 150
 }
+
+HUOM: calories ja totalCalories AINA per 100g/100ml!
 `;
 
     if (profile?.weight && profile?.height) {
