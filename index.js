@@ -89,32 +89,53 @@ Palauta VAIN JSON, ei mitään muuta tekstiä.`;
   };
 }
 
-// Annoskokosäädöt: annoskoko, lisätty öljy, ravintola
-function applyMealAdjustments(baseData, portionSize, addedOil, isRestaurant) {
+// Annoskokosäädöt: frontin mealAdjustments-olio
+// mealAdjustments: { portionMultiplier, oilAdded, servingContext, adjustmentPercent }
+function applyMealAdjustments(baseData, mealAdjustments = {}) {
   const adjusted = { ...baseData };
 
-  // Annoskoko (oletus 1 = normaali annos)
-  let factor = 1;
-  if (portionSize === 0.5) factor = 0.5;
-  if (portionSize === 1.5) factor = 1.5;
+  const {
+    portionMultiplier = 1,
+    oilAdded = false,
+    servingContext = "home",
+    adjustmentPercent = 0,
+  } = mealAdjustments || {};
 
-  adjusted.calories = Math.round(adjusted.calories * factor);
-  adjusted.protein = Math.round(adjusted.protein * factor);
-  adjusted.carbs = Math.round(adjusted.carbs * factor);
-  adjusted.fat = Math.round(adjusted.fat * factor);
+  // Annoskoko (esim. 0.5, 0.7, 1, 1.2, 1.4)
+  const portionFactor = Number(portionMultiplier) || 1;
+
+  adjusted.calories = Math.round(adjusted.calories * portionFactor);
+  adjusted.protein = Math.round(adjusted.protein * portionFactor);
+  adjusted.carbs = Math.round(adjusted.carbs * portionFactor);
+  adjusted.fat = Math.round(adjusted.fat * portionFactor);
 
   // Lisätty öljy (~1 rkl)
-  if (addedOil) {
+  if (oilAdded) {
     adjusted.calories += 100;
     adjusted.fat += 11;
   }
 
-  // Ravintola-annos: tyypillisesti raskaampi
-  if (isRestaurant) {
+  // Tarjoilukonteksti: valmisruoka ja ravintola-annos hieman raskaampia
+  if (servingContext === "readymeal") {
+    adjusted.calories = Math.round(adjusted.calories * 1.1);
+    adjusted.protein = Math.round(adjusted.protein * 1.1);
+    adjusted.carbs = Math.round(adjusted.carbs * 1.1);
+    adjusted.fat = Math.round(adjusted.fat * 1.1);
+  } else if (servingContext === "restaurant") {
     adjusted.calories = Math.round(adjusted.calories * 1.2);
     adjusted.protein = Math.round(adjusted.protein * 1.1);
     adjusted.carbs = Math.round(adjusted.carbs * 1.1);
     adjusted.fat = Math.round(adjusted.fat * 1.2);
+  }
+
+  // Manuaalinen %-säätö (-20 … +20)
+  const percent = Number(adjustmentPercent) || 0;
+  if (percent !== 0) {
+    const factor = 1 + percent / 100;
+    adjusted.calories = Math.round(adjusted.calories * factor);
+    adjusted.protein = Math.round(adjusted.protein * factor);
+    adjusted.carbs = Math.round(adjusted.carbs * factor);
+    adjusted.fat = Math.round(adjusted.fat * factor);
   }
 
   return adjusted;
@@ -201,12 +222,13 @@ ${adjusted.healthClass} ${healthComment}`;
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
   try {
-    const { ocrText, profile, imageBase64, portionSize, addedOil, isRestaurant } = req.body;
+    const { ocrText, profile, imageBase64, mealAdjustments } = req.body;
 
     // AI-kuva-analyysi (AI-kameranappi)
     if (imageBase64) {
+      console.log("mealAdjustments from client:", mealAdjustments);
       const baseData = await analyzeImage(imageBase64);
-      const adjusted = applyMealAdjustments(baseData, portionSize, addedOil, isRestaurant);
+      const adjusted = applyMealAdjustments(baseData, mealAdjustments);
       const hasProfile = profile?.weight && profile?.height;
       const resultText = hasProfile
         ? buildProfileAwareText(adjusted, profile)
