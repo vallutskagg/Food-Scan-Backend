@@ -9,10 +9,218 @@ app.use(express.json());
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
+/* ================= AI IMAGE HELPERS ================= */
+
+// Vision-mallin analyysi: tunnistaa ruokalajin ja karkeat makrot
+async function analyzeImage(imageBase64) {
+  const prompt = `Analysoi kuva ruoka-annoksesta ja palauta arvio NORMAALISTA annoskoosta (noin 300–400 g) seuraavassa JSON-muodossa:
+
+{
+  "foodName": "Ruoan nimi",
+  "calories": 650,
+  "protein": 40,
+  "carbs": 60,
+  "fat": 20,
+  "healthClass": "🟢"
+}
+
+- foodName: lyhyt, arkikielinen ruokalajin nimi (esim. "Kana-riisiannos")
+- calories, protein, carbs, fat: karkea arvio yhdestä normaalista annoksesta
+- healthClass: 🟢 (pääosin terveellinen), 🟡 (ok arjessa), 🔴 (raskas/epäterveellinen)
+
+Palauta VAIN JSON, ei mitään muuta tekstiä.`;
+
+  const response = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-goog-api-key": API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: imageBase64,
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || "Vision-analyysi epäonnistui");
+  }
+
+  const data = await response.json();
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+  let cleanedText = rawText.trim();
+  if (cleanedText.startsWith("```json")) {
+    cleanedText = cleanedText.replace(/^```json\s*/i, "");
+  } else if (cleanedText.startsWith("```")) {
+    cleanedText = cleanedText.replace(/^```\s*/, "");
+  }
+  if (cleanedText.endsWith("```")) {
+    cleanedText = cleanedText.replace(/\s*```$/, "");
+  }
+
+  const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+  const result = JSON.parse(jsonMatch ? jsonMatch[0] : cleanedText);
+
+  return {
+    foodName: result.foodName || "Tuntematon annos",
+    calories: Number(result.calories) || 0,
+    protein: Number(result.protein) || 0,
+    carbs: Number(result.carbs) || 0,
+    fat: Number(result.fat) || 0,
+    healthClass: result.healthClass || "🟡",
+  };
+}
+
+// Annoskokosäädöt: annoskoko, lisätty öljy, ravintola
+function applyMealAdjustments(baseData, portionSize, addedOil, isRestaurant) {
+  const adjusted = { ...baseData };
+
+  // Annoskoko (oletus 1 = normaali annos)
+  let factor = 1;
+  if (portionSize === 0.5) factor = 0.5;
+  if (portionSize === 1.5) factor = 1.5;
+
+  adjusted.calories = Math.round(adjusted.calories * factor);
+  adjusted.protein = Math.round(adjusted.protein * factor);
+  adjusted.carbs = Math.round(adjusted.carbs * factor);
+  adjusted.fat = Math.round(adjusted.fat * factor);
+
+  // Lisätty öljy (~1 rkl)
+  if (addedOil) {
+    adjusted.calories += 100;
+    adjusted.fat += 11;
+  }
+
+  // Ravintola-annos: tyypillisesti raskaampi
+  if (isRestaurant) {
+    adjusted.calories = Math.round(adjusted.calories * 1.2);
+    adjusted.protein = Math.round(adjusted.protein * 1.1);
+    adjusted.carbs = Math.round(adjusted.carbs * 1.1);
+    adjusted.fat = Math.round(adjusted.fat * 1.2);
+  }
+
+  return adjusted;
+}
+
+// Ylläpitokaloritarve (BMR + aktiivisuus)
+function calculateDailyCalories(profile) {
+  if (!profile?.weight || !profile?.height) return null;
+
+  const weight = Number(profile.weight);
+  const height = Number(profile.height);
+  const age = Number(profile.age ?? 30);
+  const gender = profile.gender ?? "other";
+
+  let bmr = 10 * weight + 6.25 * height - 5 * age;
+  if (gender === "male") bmr += 5;
+  else if (gender === "female") bmr -= 161;
+
+  const activityMultipliers = {
+    sedentary: 1.2,
+    light: 1.375,
+    moderate: 1.55,
+    active: 1.725,
+    veryActive: 1.9,
+  };
+
+  const multiplier = activityMultipliers[profile.activity] || 1.5;
+  return Math.round(bmr * multiplier);
+}
+
+// Profiilitietoinen palaute
+function buildProfileAwareText(adjusted, profile) {
+  const dailyCalories = calculateDailyCalories(profile);
+  if (!dailyCalories) {
+    return buildGenericText(adjusted);
+  }
+
+  const ratio = adjusted.calories / dailyCalories;
+  const percentage = Math.round(ratio * 100);
+
+  let goalLabel = "ylläpito";
+  if (profile.goal === "lose") goalLabel = "laihdutus";
+  if (profile.goal === "gain") goalLabel = "lihasmassan kasvu";
+
+  let comment;
+  if (profile.goal === "lose") {
+    if (ratio > 0.5) {
+      comment = "Iso pala päivän kaloreista, syö varoen tai jaa pienempiin annoksiin.";
+    } else if (ratio >= 0.2 && ratio <= 0.3) {
+      comment = "Hyvä osuuspala päivän kaloreista, sopii hyvin pääateriaksi.";
+    } else {
+      comment = "Kohtuullinen annos laihdutukseen.";
+    }
+  } else if (profile.goal === "gain") {
+    comment = `Hyvä proteiinimäärä (${adjusted.protein} g) lihasmassan kasvuun – huolehdi myös riittävästä kokonaisenergiasta.`;
+  } else {
+    comment = "Sopii osaksi tasapainoista ylläpitoruokavaliota.";
+  }
+
+  return `${adjusted.foodName} (arvio n. ${adjusted.calories} kcal, ${adjusted.protein} g proteiinia, ${adjusted.carbs} g hiilihydraatteja, ${adjusted.fat} g rasvaa).
+
+Tämä on noin ${percentage}% päivän ${goalLabel}tavoitteesi kaloreista.
+
+${comment} ${adjusted.healthClass}`;
+}
+
+// Yleinen palaute ilman profiilia
+function buildGenericText(adjusted) {
+  let healthComment;
+
+  if (adjusted.healthClass === "🟢") {
+    healthComment = "Pääosin terveellinen annos – paljon proteiinia ja/tai kuitua.";
+  } else if (adjusted.healthClass === "🟡") {
+    healthComment = "Kohtuullisen terveellinen arkiruoka – sisältää proteiinia, mutta myös jonkin verran rasvaa tai sokeria.";
+  } else {
+    healthComment = "Raskas annos – paras satunnaiseen herkutteluun runsaamman energiamäärän vuoksi.";
+  }
+
+  return `${adjusted.foodName} (arvio n. ${adjusted.calories} kcal, ${adjusted.protein} g proteiinia, ${adjusted.carbs} g hiilihydraatteja, ${adjusted.fat} g rasvaa).
+
+${adjusted.healthClass} ${healthComment}`;
+}
+
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
   try {
-    const { ocrText, profile } = req.body;
+    const { ocrText, profile, imageBase64, portionSize, addedOil, isRestaurant } = req.body;
+
+    // AI-kuva-analyysi (AI-kameranappi)
+    if (imageBase64) {
+      const baseData = await analyzeImage(imageBase64);
+      const adjusted = applyMealAdjustments(baseData, portionSize, addedOil, isRestaurant);
+      const hasProfile = profile?.weight && profile?.height;
+      const resultText = hasProfile
+        ? buildProfileAwareText(adjusted, profile)
+        : buildGenericText(adjusted);
+
+      return res.json({
+        result: resultText,
+        foodName: adjusted.foodName,
+        calories: adjusted.calories,
+        protein: adjusted.protein,
+        carbs: adjusted.carbs,
+        fat: adjusted.fat,
+        healthClass: adjusted.healthClass,
+      });
+    }
 
     /* ================= OCR ANALYSIS ================= */
     if (!ocrText) {
