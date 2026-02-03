@@ -13,7 +13,7 @@ const API_KEY = process.env.GEMINI_API_KEY;
 
 // Vision-mallin analyysi: tunnistaa ruokalajin ja karkeat makrot
 async function analyzeImage(imageBase64) {
-  const prompt = `Analysoi kuva ruoka-annoksesta ja palauta arvio NORMAALISTA annoskoosta (noin 300–400 g) seuraavassa JSON-muodossa:
+  const prompt = `Analysoi KUVA ruoka-annoksesta (AI-kuva-analyysi, ei OCR-tekstiä) ja palauta arvio NORMAALISTA annoskoosta (noin 300–400 g) seuraavassa JSON-muodossa:
 
 {
   "foodName": "Ruoan nimi",
@@ -21,12 +21,14 @@ async function analyzeImage(imageBase64) {
   "protein": 40,
   "carbs": 60,
   "fat": 20,
-  "healthClass": "🟢"
+  "healthClass": "🟢",
+  "source": "image-ai"
 }
 
 - foodName: lyhyt, arkikielinen ruokalajin nimi (esim. "Kana-riisiannos")
 - calories, protein, carbs, fat: karkea arvio yhdestä normaalista annoksesta
 - healthClass: 🟢 (pääosin terveellinen), 🟡 (ok arjessa), 🔴 (raskas/epäterveellinen)
+- source: merkkijono, jonka arvon tulee olla täsmälleen "image-ai" (vain sisäiseen käyttöön)
 
 Palauta VAIN JSON, ei mitään muuta tekstiä.`;
 
@@ -195,11 +197,21 @@ function buildProfileAwareText(adjusted, profile) {
     comment = "Sopii osaksi tasapainoista ylläpitoruokavaliota.";
   }
 
-  return `${adjusted.foodName} (arvio n. ${adjusted.calories} kcal, ${adjusted.protein} g proteiinia, ${adjusted.carbs} g hiilihydraatteja, ${adjusted.fat} g rasvaa).
+  return `${adjusted.foodName}
 
-Tämä on noin ${percentage}% päivän ${goalLabel}tavoitteesi kaloreista.
+🟰 ARVIOITU ANNOS
+🔥 Energia: noin ${adjusted.calories} kcal / annos  
+🍗 Proteiini: ${adjusted.protein} g  
+🍞 Hiilihydraatit: ${adjusted.carbs} g  
+🥑 Rasva: ${adjusted.fat} g  
 
-${comment} ${adjusted.healthClass}`;
+👤 VAIKUTUS PÄIVÄN TAVOITTEESEEN
+Tämä annos on noin ${percentage}% päivän ${goalLabel}tavoitteesi kaloreista.
+
+📝 ARVIO
+${comment} ${adjusted.healthClass}
+
+🔍 Perustuu: AI-kuvaan (annoskuvasta arvioidut ravintoarvot).`;
 }
 
 // Yleinen palaute ilman profiilia
@@ -214,9 +226,18 @@ function buildGenericText(adjusted) {
     healthComment = "Raskas annos – paras satunnaiseen herkutteluun runsaamman energiamäärän vuoksi.";
   }
 
-  return `${adjusted.foodName} (arvio n. ${adjusted.calories} kcal, ${adjusted.protein} g proteiinia, ${adjusted.carbs} g hiilihydraatteja, ${adjusted.fat} g rasvaa).
+  return `${adjusted.foodName}
 
-${adjusted.healthClass} ${healthComment}`;
+🟰 ARVIOITU ANNOS
+🔥 Energia: noin ${adjusted.calories} kcal / annos  
+🍗 Proteiini: ${adjusted.protein} g  
+🍞 Hiilihydraatit: ${adjusted.carbs} g  
+🥑 Rasva: ${adjusted.fat} g  
+
+📝 ARVIO
+${adjusted.healthClass} ${healthComment}
+
+🔍 Perustuu: AI-kuvaan (annoskuvasta arvioidut ravintoarvot).`;
 }
 
 /* ================= ANALYZE ENDPOINT ================= */
@@ -251,7 +272,9 @@ app.post("/analyze", async (req, res) => {
     }
 
     let prompt = `
-OLET TAUSTALLA TOIMIVA ANALYYSIMOOTTORI.
+  OLET TAUSTALLA TOIMIVA ANALYYSIMOOTTORI.
+
+  ANALYYSIMENETELMÄ: OCR-TEKSTI (ravintosisältö on luettu pakkauksesta; tämä ei ole kuva-analyysi).
 
 ⚠️ ERITTÄIN TÄRKEÄT SÄÄNNÖT:
 - KÄYTTÄJÄ NÄKEE VAIN JSON-KENTÄN "result"
