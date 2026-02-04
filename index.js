@@ -256,13 +256,29 @@ app.post("/analyze", async (req, res) => {
         : buildGenericText(adjusted);
 
       return res.json({
+        // Käyttäjälle näytettävä analyysiteksti
         result: resultText,
+
+        // Taaksepäinyhteensopivuus (vanha malli)
         foodName: adjusted.foodName,
         calories: adjusted.calories,
         protein: adjusted.protein,
         carbs: adjusted.carbs,
         fat: adjusted.fat,
         healthClass: adjusted.healthClass,
+
+        // Uusi malli: products + totalCalories, jota appi odottaa
+        products: [
+          {
+            name: adjusted.foodName,
+            calories: adjusted.calories,
+            protein: adjusted.protein,
+            carbs: adjusted.carbs,
+            fat: adjusted.fat,
+          },
+        ],
+        totalCalories: adjusted.calories,
+        suggestedName: adjusted.foodName,
       });
     }
 
@@ -298,12 +314,18 @@ PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
 {
   "result": "<vain käyttäjälle tarkoitettu teksti>",
   "products": [
-    { "name": "Tuotteen nimi", "calories": 150 }
+    {
+      "name": "Tuotteen nimi",
+      "calories": 150,
+      "protein": 5,
+      "carbs": 20,
+      "fat": 10
+    }
   ],
   "totalCalories": 150
 }
 
-HUOM: calories ja totalCalories AINA per 100g/100ml!
+HUOM: calories ja totalCalories AINA per 100g/100ml! Makrot (protein, carbs, fat) myös samassa per 100g/100ml -mittakaavassa, jos saatavilla.
 `;
 
     if (profile?.weight && profile?.height) {
@@ -403,11 +425,31 @@ Yksi selkeä lause.
     }
 
     if (payload && typeof payload === "object") {
-      const products = Array.isArray(payload.products) ? payload.products : [];
+      const rawProducts = Array.isArray(payload.products) ? payload.products : [];
+
+      const normalizeNumber = (value) => {
+        if (typeof value === "number" && Number.isFinite(value)) return value;
+        if (typeof value === "string") {
+          const match = value.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+          if (match) {
+            const num = Number(match[0]);
+            if (Number.isFinite(num)) return num;
+          }
+        }
+        return 0;
+      };
+
+      const products = rawProducts.map((p) => ({
+        ...p,
+        calories: normalizeNumber(p?.calories),
+        protein: normalizeNumber(p?.protein),
+        carbs: normalizeNumber(p?.carbs),
+        fat: normalizeNumber(p?.fat),
+      }));
 
       const totalCalories = Number.isFinite(payload.totalCalories)
-        ? payload.totalCalories
-        : products.reduce((sum, p) => sum + (Number(p?.calories) || 0), 0);
+        ? normalizeNumber(payload.totalCalories)
+        : products.reduce((sum, p) => sum + (p.calories || 0), 0);
 
       let suggestedName = "";
       if (products.length === 1) {
