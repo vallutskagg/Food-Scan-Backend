@@ -197,6 +197,28 @@ function buildProfileAwareText(adjusted, profile) {
     comment = "Sopii osaksi tasapainoista ylläpitoruokavaliota.";
   }
 
+  let improvementSuggestion = "";
+  if (adjusted.healthClass === "🔴") {
+    let focus;
+    if (adjusted.fat > adjusted.carbs && adjusted.fat > adjusted.protein) {
+      focus = "rasvan määrä";
+    } else if (adjusted.carbs >= adjusted.fat && adjusted.carbs > adjusted.protein) {
+      focus = "hiilihydraattien ja sokerin määrä";
+    } else {
+      focus = "annoksen kokonaisenergiatiheys";
+    }
+
+    improvementSuggestion = `
+
+💡 PAREMPI VAIHTOEHTO
+Jos haluat pitää kiinni ${goalLabel}tavoitteestasi, kokeile samantyyppistä mutta kevyempää versiota:
+- pienempi annoskoko tai puolet annoksesta
+- korvaa osa lisukkeista vihanneksilla tai salaatilla
+- valitse vähärasvaisempi proteiininlähde tai vähemmän lisättyä kastiketta
+
+Tavoitteena on keventää erityisesti ${focus} ilman, että ruoan tyyli muuttuu täysin.`;
+  }
+
   return `${adjusted.foodName}
 
 🟰 ARVIOITU ANNOS
@@ -209,7 +231,7 @@ function buildProfileAwareText(adjusted, profile) {
 Tämä annos on noin ${percentage}% päivän ${goalLabel}tavoitteesi kaloreista.
 
 📝 ARVIO
-${comment} ${adjusted.healthClass}
+${comment} ${adjusted.healthClass}${improvementSuggestion}
 
 🔍 Perustuu: AI-kuvaan (annoskuvasta arvioidut ravintoarvot).`;
 }
@@ -225,7 +247,6 @@ function buildGenericText(adjusted) {
   } else {
     healthComment = "Raskas annos – paras satunnaiseen herkutteluun runsaamman energiamäärän vuoksi.";
   }
-
   return `${adjusted.foodName}
 
 🟰 ARVIOITU ANNOS
@@ -356,6 +377,9 @@ KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 
 🎯 JOHTOPÄÄTÖS:
 Yksi selkeä ja suora lause.
+
+💡 PAREMPI VAIHTOEHTO (JOS TUOTE ON RASKAS / 🔴):
+Lyhyt ehdotus samankaltaisesta mutta selvästi kevyemmästä tai terveellisemmästä vaihtoehdosta (esim. vähemmän sokeria tai rasvaa, pienempi pakkauskoko tai "light"-versio).
 `;
     } else {
       prompt += `
