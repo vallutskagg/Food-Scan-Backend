@@ -378,8 +378,15 @@ KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 🎯 JOHTOPÄÄTÖS:
 Yksi selkeä ja suora lause.
 
-💡 PAREMPI VAIHTOEHTO (JOS TUOTE ON RASKAS / 🔴):
-Lyhyt ehdotus samankaltaisesta mutta selvästi kevyemmästä tai terveellisemmästä vaihtoehdosta (esim. vähemmän sokeria tai rasvaa, pienempi pakkauskoko tai "light"-versio).
+💡 PAREMPI VAIHTOEHTO:
+- LISÄÄ TÄMÄ OSIO VAIN JOS ARVIOIT TUOTTEEN LUOKKAAN 🔴 (raskas / epäterveellinen)
+- ÄLÄ LISÄÄ TÄTÄ OSIOTA, JOS TUOTE ON 🟢 TAI 🟡
+- Anna konkreettinen vaihtoehto tai vaihto, esim.:
+  - vaihda täysrasvainen versio vähärasvaiseen
+  - vaihda sokerillinen juoma sokerittomaan
+  - vaihda osa tuotteesta kasvis-/salaattilisukkeeseen
+  - valitse pienempi pakkauskoko
+Kirjoita lyhyesti ja konkreettisesti, mitä käyttäjä voi vaihtaa mihin.
 `;
     } else {
       prompt += `
