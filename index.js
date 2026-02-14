@@ -20,6 +20,7 @@ async function analyzeImage(imageBase64) {
   "calories": 650,
   "protein": 40,
   "carbs": 60,
+  "sugar": 0,
   "fat": 20,
   "healthClass": "🟢",
   "source": "image-ai"
@@ -27,6 +28,7 @@ async function analyzeImage(imageBase64) {
 
 - foodName: lyhyt, arkikielinen ruokalajin nimi (esim. "Kana-riisiannos")
 - calories, protein, carbs, fat: karkea arvio yhdestä normaalista annoksesta
+- sugar: arvioitu sokerin määrä grammoina samasta annoksesta (0 jos ei tiedossa)
 - healthClass: 🟢 (pääosin terveellinen), 🟡 (ok arjessa), 🔴 (raskas/epäterveellinen)
 - source: merkkijono, jonka arvon tulee olla täsmälleen "image-ai" (vain sisäiseen käyttöön)
 
@@ -86,6 +88,7 @@ Palauta VAIN JSON, ei mitään muuta tekstiä.`;
     calories: Number(result.calories) || 0,
     protein: Number(result.protein) || 0,
     carbs: Number(result.carbs) || 0,
+    sugar: Number(result.sugar) || 0,
     fat: Number(result.fat) || 0,
     healthClass: result.healthClass || "🟡",
   };
@@ -109,6 +112,7 @@ function applyMealAdjustments(baseData, mealAdjustments = {}) {
   adjusted.calories = Math.round(adjusted.calories * portionFactor);
   adjusted.protein = Math.round(adjusted.protein * portionFactor);
   adjusted.carbs = Math.round(adjusted.carbs * portionFactor);
+  adjusted.sugar = Math.round((adjusted.sugar || 0) * portionFactor);
   adjusted.fat = Math.round(adjusted.fat * portionFactor);
 
   // Lisätty öljy (~1 rkl)
@@ -122,11 +126,13 @@ function applyMealAdjustments(baseData, mealAdjustments = {}) {
     adjusted.calories = Math.round(adjusted.calories * 1.1);
     adjusted.protein = Math.round(adjusted.protein * 1.1);
     adjusted.carbs = Math.round(adjusted.carbs * 1.1);
+    adjusted.sugar = Math.round((adjusted.sugar || 0) * 1.1);
     adjusted.fat = Math.round(adjusted.fat * 1.1);
   } else if (servingContext === "restaurant") {
     adjusted.calories = Math.round(adjusted.calories * 1.2);
     adjusted.protein = Math.round(adjusted.protein * 1.1);
     adjusted.carbs = Math.round(adjusted.carbs * 1.1);
+    adjusted.sugar = Math.round((adjusted.sugar || 0) * 1.1);
     adjusted.fat = Math.round(adjusted.fat * 1.2);
   }
 
@@ -137,8 +143,15 @@ function applyMealAdjustments(baseData, mealAdjustments = {}) {
     adjusted.calories = Math.round(adjusted.calories * factor);
     adjusted.protein = Math.round(adjusted.protein * factor);
     adjusted.carbs = Math.round(adjusted.carbs * factor);
+    adjusted.sugar = Math.round((adjusted.sugar || 0) * factor);
     adjusted.fat = Math.round(adjusted.fat * factor);
   }
+
+  adjusted.calories = Math.max(0, adjusted.calories || 0);
+  adjusted.protein = Math.max(0, adjusted.protein || 0);
+  adjusted.carbs = Math.max(0, adjusted.carbs || 0);
+  adjusted.fat = Math.max(0, adjusted.fat || 0);
+  adjusted.sugar = Math.max(0, Math.min(adjusted.sugar || 0, adjusted.carbs || 0));
 
   return adjusted;
 }
@@ -272,6 +285,21 @@ function normalizeNumber(value, fallback = 0) {
     }
   }
   return fallback;
+}
+
+function sanitizeMacros(product = {}, fallbackName = "Tuntematon tuote") {
+  const calories = Math.max(0, normalizeNumber(product?.calories));
+  const protein = Math.max(0, normalizeNumber(product?.protein));
+  const carbs = Math.max(0, normalizeNumber(product?.carbs));
+  const fat = Math.max(0, normalizeNumber(product?.fat));
+  const sugarRaw = Math.max(0, normalizeNumber(product?.sugar));
+  const sugar = Math.min(sugarRaw, carbs);
+  const name =
+    typeof product?.name === "string" && product.name.trim()
+      ? product.name.trim()
+      : fallbackName;
+
+  return { ...product, name, calories, protein, carbs, sugar, fat };
 }
 
 function normalizeWeeklyReport(raw) {
@@ -465,6 +493,7 @@ ${JSON.stringify(weeklyData, null, 2)}`;
         calories: adjusted.calories,
         protein: adjusted.protein,
         carbs: adjusted.carbs,
+        sugar: adjusted.sugar,
         fat: adjusted.fat,
         healthClass: adjusted.healthClass,
 
@@ -475,6 +504,7 @@ ${JSON.stringify(weeklyData, null, 2)}`;
             calories: adjusted.calories,
             protein: adjusted.protein,
             carbs: adjusted.carbs,
+            sugar: adjusted.sugar,
             fat: adjusted.fat,
           },
         ],
@@ -500,15 +530,14 @@ ${JSON.stringify(weeklyData, null, 2)}`;
 - "products" ja "totalCalories" ovat vain sovelluksen sisäiseen käyttöön
 - ÄLÄ mainitse sanoja: JSON, kenttä, ohje, prompt, analyysi, malli
 
-⚠️ KRIITTINEN SÄÄNTÖ KALOREISTA:
-- KAIKKI kalorit TÄYTYY AINA olla per 100g tai per 100ml muodossa
+⚠️ KRIITTINEN SÄÄNTÖ KALOREISTA JA MAKROISTA:
+- Palauta ensisijaisesti kulutetun annoksen calories ja makrot (ei pakollisesti per 100g/100ml)
 - JOS tuote on esim. 500ml ja sisältää 152 kcal yhteensä:
-  → Laske: 152 ÷ (500 ÷ 100) = 30.4 kcal per 100ml
-  → Palauta calories: 30.4
-- JOS ravintotaulukko näyttää jo "per 100g: 520 kcal":
-  → Palauta calories: 520 (sellaisenaan)
-- ÄLÄ KOSKAAN palauta tuotteen kokonaiskaloreja
-- Useamman tuotteen tapauksessa: jokainen calories per 100g/100ml, totalCalories on summa
+  → Palauta kulutetun merkinnän calories (esim. 152), ja skaalaa makrot vastaavaan annokseen
+- JOS ravintotaulukko näyttää vain "per 100g: 520 kcal":
+  → Skaalaa consumed annokseen, jos annoskoko tunnistetaan; muuten käytä best-effort arvoa
+- Jos tieto on epävarma, palauta silti calories + makrot avaimet numeerisina arvoina
+- Useamman tuotteen tapauksessa: palauta jokaiselle tuotteelle kulutettu calories + makrot, ja totalCalories niiden summana
 
 PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
 
@@ -520,13 +549,24 @@ PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
       "calories": 150,
       "protein": 5,
       "carbs": 20,
+      "sugar": 8,
       "fat": 10
     }
   ],
   "totalCalories": 150
 }
 
-HUOM: calories ja totalCalories AINA per 100g/100ml! Makrot (protein, carbs, fat) myös samassa per 100g/100ml -mittakaavassa, jos saatavilla.
+HUOM:
+- carbs = total carbohydrates (Hiilihydraatit / Carbohydrate / Carbohydrates)
+- sugar = sugars subset (joista sokereita / Sugars / of which sugars)
+- Jos sugar-arvo puuttuu, palauta sugar: 0 (älä jätä kenttää pois)
+- Tunnista desimaalit sekä muodossa 12.5 g että 12,5 g
+- Suosi annoskohtaisia arvoja, jos syöty annos on selkeästi merkitty
+- Muuten skaalaa per 100g/per 100ml arvoista havaitun annoksen mukaan, jos mahdollista
+- Palauta makrot lopullisena kulutettuna merkintänä kalenteria varten
+- Validointi: kaikki makrot >= 0, sugar <= carbs; jos sugar > carbs, aseta sugar = carbs
+- Sugar-indikaattorit: joista sokereita, sokerit, sokeria, sugars, of which sugars
+- Carbs-indikaattorit: hiilihydraatit, carbohydrate, carbohydrates
 `;
 
     if (profile?.weight && profile?.height) {
@@ -638,16 +678,21 @@ Yksi selkeä lause.
     if (payload && typeof payload === "object") {
       const rawProducts = Array.isArray(payload.products) ? payload.products : [];
 
-      const products = rawProducts.map((p) => ({
-        ...p,
-        calories: normalizeNumber(p?.calories),
-        protein: normalizeNumber(p?.protein),
-        carbs: normalizeNumber(p?.carbs),
-        fat: normalizeNumber(p?.fat),
-      }));
+      const products = rawProducts.length
+        ? rawProducts.map((p) => sanitizeMacros(p))
+        : [
+            sanitizeMacros({
+              name: payload.name || payload.foodName || "Tuntematon tuote",
+              calories: payload.calories,
+              protein: payload.protein,
+              carbs: payload.carbs,
+              sugar: payload.sugar,
+              fat: payload.fat,
+            }),
+          ];
 
       const totalCalories = Number.isFinite(payload.totalCalories)
-        ? normalizeNumber(payload.totalCalories)
+        ? Math.max(0, normalizeNumber(payload.totalCalories))
         : products.reduce((sum, p) => sum + (p.calories || 0), 0);
 
       let suggestedName = "";
@@ -670,7 +715,16 @@ Yksi selkeä lause.
 
     res.json({
       result: "❌ Analyysi epäonnistui. Yritä uudelleen tai skannaa selkeämpi kuva.",
-      products: [],
+      products: [
+        {
+          name: "Tuntematon tuote",
+          calories: 0,
+          carbs: 0,
+          sugar: 0,
+          protein: 0,
+          fat: 0,
+        },
+      ],
       totalCalories: 0,
     });
   } catch (err) {
