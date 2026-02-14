@@ -261,10 +261,190 @@ ${adjusted.healthClass} ${healthComment}
 🔍 Perustuu: AI-kuvaan (annoskuvasta arvioidut ravintoarvot).`;
 }
 
+/* ================= WEEKLY REPORT HELPERS ================= */
+function normalizeNumber(value, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const match = value.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+    if (match) {
+      const num = Number(match[0]);
+      if (Number.isFinite(num)) return num;
+    }
+  }
+  return fallback;
+}
+
+function normalizeWeeklyReport(raw) {
+  const safe = raw && typeof raw === "object" ? raw : {};
+  const suggestions = Array.isArray(safe.suggestions)
+    ? safe.suggestions
+        .filter((s) => typeof s === "string")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 4)
+    : [];
+
+  const level = ["🟢", "🟡", "🔴"].includes(safe.level) ? safe.level : "🟡";
+  const score = Math.min(100, Math.max(0, Math.round(normalizeNumber(safe.score, 60))));
+  const summary =
+    typeof safe.summary === "string" && safe.summary.trim()
+      ? safe.summary.trim()
+      : "Viikon tiedot on analysoitu. Keskity tasaiseen energiansaantiin ja tavoitteeseen sopivaan proteiinin määrään.";
+
+  const fallbackSuggestions = [
+    "Pidä päivittäinen energiansaanti mahdollisimman tasaisena koko viikon ajan.",
+    "Säädä proteiinia tavoitteen mukaan ja vältä suuria heilahteluja sokerin saannissa.",
+  ];
+
+  return {
+    level,
+    score,
+    summary,
+    suggestions: suggestions.length >= 2 ? suggestions : fallbackSuggestions,
+  };
+}
+
+function buildWeeklyReportFallback(body = {}) {
+  const goal = body?.data?.goal;
+  const totals = body?.data?.totals || {};
+  const products = Array.isArray(body?.data?.products) ? body.data.products : [];
+  const topProduct = products
+    .slice()
+    .sort((a, b) => normalizeNumber(b?.calories) * normalizeNumber(b?.count, 1) - normalizeNumber(a?.calories) * normalizeNumber(a?.count, 1))[0];
+
+  let level = "🟡";
+  let score = 65;
+  const avgCalories = normalizeNumber(totals.avgCaloriesPerDay);
+  const dailyTargetCalories = normalizeNumber(body?.data?.dailyTargetCalories);
+  const avgProtein = normalizeNumber(totals.avgProtein);
+  const targetProtein = normalizeNumber(body?.data?.dailyMacroTargets?.protein);
+
+  if (goal === "laihdutus" && dailyTargetCalories > 0) {
+    if (avgCalories <= dailyTargetCalories && avgProtein >= targetProtein * 0.85) {
+      level = "🟢";
+      score = 82;
+    } else if (avgCalories > dailyTargetCalories * 1.1) {
+      level = "🔴";
+      score = 42;
+    }
+  } else if (goal === "lihasmassa") {
+    if (avgProtein >= targetProtein * 0.9) {
+      level = "🟢";
+      score = 80;
+    } else if (avgProtein < targetProtein * 0.75) {
+      level = "🔴";
+      score = 45;
+    }
+  } else if (goal === "yllapito" && dailyTargetCalories > 0) {
+    const diffRatio = Math.abs(avgCalories - dailyTargetCalories) / dailyTargetCalories;
+    if (diffRatio <= 0.08) {
+      level = "🟢";
+      score = 84;
+    } else if (diffRatio > 0.18) {
+      level = "🔴";
+      score = 46;
+    }
+  }
+
+  const topProductHint = topProduct?.name
+    ? `Tarkista tuotteen "${topProduct.name}" viikkokäyttöä ja säädä määrää tavoitteeseesi sopivaksi.`
+    : "Säädä eniten käytettyjen tuotteiden määriä tavoitteesi suuntaan.";
+
+  let goalHint = "Pidä energia ja makrot tasaisina viikon eri päivinä.";
+  if (goal === "laihdutus") {
+    goalHint = "Pidä kalorit hallinnassa ja varmista riittävä proteiini kylläisyyden tueksi.";
+  } else if (goal === "lihasmassa") {
+    goalHint = "Nosta tarvittaessa energiaa ja varmista riittävä proteiini lihasmassan tueksi.";
+  } else if (goal === "yllapito") {
+    goalHint = "Pidä kokonaisenergia lähellä tavoitetta ja säilytä makrojen tasapaino.";
+  }
+
+  return {
+    level,
+    score,
+    summary: "Viikkoraportti muodostettiin varamenetelmällä. Kokonaisuus on arvioitu kaloreiden, makrojen, painokehityksen ja tuotekohtaisen käytön perusteella.",
+    suggestions: [goalHint, topProductHint],
+  };
+}
+
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
   try {
-    const { ocrText, profile, imageBase64, mealAdjustments } = req.body;
+    const { mode, instructions, data: weeklyData, ocrText, profile, imageBase64, mealAdjustments } = req.body;
+
+    if (mode === "weekly_report") {
+      if (!instructions || typeof instructions !== "string" || !weeklyData || typeof weeklyData !== "object") {
+        return res.status(400).json({ error: "Virheellinen weekly_report pyyntö: instructions ja data vaaditaan." });
+      }
+
+      const weeklyPrompt = `${instructions.trim()}
+
+Palauta VAIN JSON täsmälleen tällä rakenteella:
+{
+  "level": "🟢",
+  "score": 82,
+  "summary": "Viikkotason yhteenveto suomeksi.",
+  "suggestions": [
+    "Konkreettinen ehdotus 1",
+    "Konkreettinen ehdotus 2"
+  ]
+}
+
+Säännöt:
+- Arvioi tuotteiden käyttö, kalorit, makrot (carbs, sugar, protein, fat), painon muutos ja käyttäjän tavoite.
+- Taso: 🟢 hyvä linjaus tavoitteeseen, 🟡 kohtalainen, 🔴 heikko.
+- Ehdotuksia 2-4, lyhyitä ja konkreettisia.
+- Lisää tuotekohtainen ehdotus, jos data tukee sitä.
+- Sovita tavoitteen mukaan:
+  - laihdutus: kalorien hallinta + proteiini
+  - yllapito: tasainen saanti + monipuolinen tasapaino
+  - lihasmassa: riittävä energia + proteiini
+- Ei diagnooseja. Ei vaarallisia painonpudotusohjeita.
+
+Data:
+${JSON.stringify(weeklyData, null, 2)}`;
+
+      try {
+        const response = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-goog-api-key": API_KEY,
+            },
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: [{ text: weeklyPrompt }] }],
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+
+        const aiData = await response.json();
+        const rawText = aiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+        let cleanedText = rawText.trim();
+        if (cleanedText.startsWith("```json")) {
+          cleanedText = cleanedText.replace(/^```json\s*/i, "");
+        } else if (cleanedText.startsWith("```")) {
+          cleanedText = cleanedText.replace(/^```\s*/, "");
+        }
+        if (cleanedText.endsWith("```")) {
+          cleanedText = cleanedText.replace(/\s*```$/, "");
+        }
+
+        const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+        const textToParse = jsonMatch ? jsonMatch[0] : cleanedText;
+        const parsed = JSON.parse(textToParse);
+        return res.status(200).json(normalizeWeeklyReport(parsed));
+      } catch (err) {
+        console.error("weekly_report failed, using fallback:", err?.message || err);
+        return res.status(200).json(buildWeeklyReportFallback(req.body));
+      }
+    }
 
     // AI-kuva-analyysi (AI-kameranappi)
     if (imageBase64) {
@@ -457,18 +637,6 @@ Yksi selkeä lause.
 
     if (payload && typeof payload === "object") {
       const rawProducts = Array.isArray(payload.products) ? payload.products : [];
-
-      const normalizeNumber = (value) => {
-        if (typeof value === "number" && Number.isFinite(value)) return value;
-        if (typeof value === "string") {
-          const match = value.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
-          if (match) {
-            const num = Number(match[0]);
-            if (Number.isFinite(num)) return num;
-          }
-        }
-        return 0;
-      };
 
       const products = rawProducts.map((p) => ({
         ...p,
