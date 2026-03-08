@@ -5,14 +5,45 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "25mb" }));
+app.use((req, _res, next) => {
+  if (req.path === "/analyze") {
+    console.log(`[analyze] ${req.method} from ${req.ip}`);
+  }
+  next();
+});
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
 /* ================= AI IMAGE HELPERS ================= */
 
+function resolveImagePayload(body = {}) {
+  const rawImage = body?.imageBase64 ?? body?.image ?? body?.base64Image ?? body?.photoBase64 ?? "";
+  if (typeof rawImage !== "string") {
+    return { imageBase64: "", mimeType: "image/jpeg" };
+  }
+
+  const trimmed = rawImage.trim();
+  if (!trimmed) {
+    return { imageBase64: "", mimeType: "image/jpeg" };
+  }
+
+  const dataUrlMatch = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/i);
+  if (dataUrlMatch) {
+    return {
+      mimeType: dataUrlMatch[1].toLowerCase(),
+      imageBase64: dataUrlMatch[2].replace(/\s+/g, ""),
+    };
+  }
+
+  return {
+    imageBase64: trimmed.replace(/\s+/g, ""),
+    mimeType: "image/jpeg",
+  };
+}
+
 // Vision-mallin analyysi: tunnistaa ruokalajin ja karkeat makrot
-async function analyzeImage(imageBase64) {
+async function analyzeImage(imageBase64, mimeType = "image/jpeg") {
   const prompt = `Analysoi KUVA ruoka-annoksesta (AI-kuva-analyysi, ei OCR-tekstiä) ja palauta arvio NORMAALISTA annoskoosta (noin 300–400 g) seuraavassa JSON-muodossa:
 
 {
@@ -50,7 +81,7 @@ Palauta VAIN JSON, ei mitään muuta tekstiä.`;
               { text: prompt },
               {
                 inlineData: {
-                  mimeType: "image/jpeg",
+                  mimeType,
                   data: imageBase64,
                 },
               },
@@ -491,7 +522,8 @@ function buildWeeklyReportFallback(body = {}) {
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
   try {
-    const { mode, instructions, data: weeklyData, ocrText, profile, imageBase64, mealAdjustments } = req.body;
+    const { mode, instructions, data: weeklyData, ocrText, profile, mealAdjustments } = req.body;
+    const { imageBase64, mimeType } = resolveImagePayload(req.body);
 
     if (mode === "weekly_report") {
       if (!instructions || typeof instructions !== "string" || !weeklyData || typeof weeklyData !== "object") {
@@ -570,7 +602,7 @@ ${JSON.stringify(weeklyData, null, 2)}`;
     // AI-kuva-analyysi (AI-kameranappi)
     if (imageBase64) {
       console.log("mealAdjustments from client:", mealAdjustments);
-      const baseData = await analyzeImage(imageBase64);
+      const baseData = await analyzeImage(imageBase64, mimeType);
       const adjusted = applyMealAdjustments(baseData, mealAdjustments);
       const hasProfile = profile?.weight && profile?.height;
       const resultText = hasProfile
@@ -608,7 +640,10 @@ ${JSON.stringify(weeklyData, null, 2)}`;
 
     /* ================= OCR ANALYSIS ================= */
     if (!ocrText) {
-      return res.status(400).json({ error: "OCR-teksti puuttuu" });
+      return res.status(400).json({
+        error: "OCR-teksti puuttuu",
+        details: "Anna joko ocrText tai imageBase64 (myos data:image/...;base64,... kelpaa).",
+      });
     }
 
     const includeOcrProcessingScale = shouldAddOcrProcessingScale(profile);
@@ -856,7 +891,10 @@ Yksi selkeä lause.
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Jokin meni pieleen" });
+    res.status(500).json({
+      error: "Jokin meni pieleen",
+      details: err?.message || "Tuntematon virhe",
+    });
   }
 });
 
