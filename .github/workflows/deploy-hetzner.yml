@@ -17,11 +17,21 @@ jobs:
       - name: Configure SSH
         env:
           HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_SSH_KEY_B64: ${{ secrets.HETZNER_SSH_KEY_B64 }}
           HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
         run: |
           mkdir -p ~/.ssh
-          printf "%s" "$HETZNER_SSH_KEY" > ~/.ssh/id_ed25519
+          # Prefer base64 secret to avoid multiline formatting issues in GitHub UI.
+          if [ -n "$HETZNER_SSH_KEY_B64" ]; then
+            printf "%s" "$HETZNER_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          else
+            printf "%s\n" "$HETZNER_SSH_KEY" > ~/.ssh/id_ed25519
+          fi
+          tr -d '\r' < ~/.ssh/id_ed25519 > ~/.ssh/id_ed25519.tmp
+          mv ~/.ssh/id_ed25519.tmp ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          # Fail early if key is malformed.
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null
           ssh-keyscan -H "$HETZNER_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy on server
