@@ -302,6 +302,59 @@ function sanitizeMacros(product = {}, fallbackName = "Tuntematon tuote") {
   return { ...product, name, calories, protein, carbs, sugar, fat };
 }
 
+function normalizeGoal(goal) {
+  return typeof goal === "string" ? goal.trim().toLowerCase() : "";
+}
+
+function isWeightLossGoal(profile = {}) {
+  const goal = normalizeGoal(profile?.goal);
+  const weightLossGoals = new Set(["lose", "weight_loss", "laihdutus", "fatloss", "cut", "cutting"]);
+  if (weightLossGoals.has(goal)) return true;
+
+  // If goal string is unclear, infer from target weight if it is clearly below current weight.
+  const weight = normalizeNumber(profile?.weight, Number.NaN);
+  const targetWeight = normalizeNumber(profile?.targetWeight, Number.NaN);
+  if (Number.isFinite(weight) && Number.isFinite(targetWeight) && targetWeight < weight - 0.2) {
+    return true;
+  }
+
+  return false;
+}
+
+function shouldAddOcrProcessingScale(profile = {}) {
+  const hasProfileData = Boolean(profile?.weight && profile?.height);
+  // Show OCR processing scale only when health profile is effectively off.
+  return !hasProfileData;
+}
+
+function normalizeProcessingLevel(value) {
+  const parsed = Math.round(normalizeNumber(value, 0));
+  return parsed >= 1 && parsed <= 4 ? parsed : null;
+}
+
+function processingLabelFromLevel(level) {
+  if (level === 1) return "prosessoimaton";
+  if (level === 2) return "minimiprosessoitu";
+  if (level === 3) return "prosessoitu";
+  if (level === 4) return "ultraprosessoitu";
+  return "";
+}
+
+function normalizeProcessingLabel(label) {
+  if (typeof label !== "string") return "";
+  const normalized = label.trim().toLowerCase();
+  const allowed = new Set(["prosessoimaton", "minimiprosessoitu", "prosessoitu", "ultraprosessoitu"]);
+  return allowed.has(normalized) ? normalized : "";
+}
+
+function processingLevelFromLabel(label) {
+  if (label === "prosessoimaton") return 1;
+  if (label === "minimiprosessoitu") return 2;
+  if (label === "prosessoitu") return 3;
+  if (label === "ultraprosessoitu") return 4;
+  return null;
+}
+
 function normalizeWeeklyReport(raw) {
   const safe = raw && typeof raw === "object" ? raw : {};
   const suggestions = Array.isArray(safe.suggestions)
@@ -518,6 +571,8 @@ ${JSON.stringify(weeklyData, null, 2)}`;
       return res.status(400).json({ error: "OCR-teksti puuttuu" });
     }
 
+    const includeOcrProcessingScale = shouldAddOcrProcessingScale(profile);
+
     let prompt = `
   OLET TAUSTALLA TOIMIVA ANALYYSIMOOTTORI.
 
@@ -552,7 +607,11 @@ PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
       "fat": 10
     }
   ],
-  "totalCalories": 150
+  "totalCalories": 150${includeOcrProcessingScale ? `,
+  "processingLevel": 3,
+  "processingLabel": "prosessoitu",
+  "processingReason": "Perustelu vain OCR-tekstistä."
+` : ""}
 }
 
 HUOM:
@@ -565,7 +624,19 @@ HUOM:
 - Validointi: kaikki makrot >= 0, sugar <= carbs; jos sugar > carbs, aseta sugar = carbs
 - Sugar-indikaattorit: joista sokereita, sokerit, sokeria, sugars, of which sugars
 - Carbs-indikaattorit: hiilihydraatit, carbohydrate, carbohydrates
-`;
+${includeOcrProcessingScale ? `
+- Arvioi prosessointiaste vain OCR-tekstin perusteella (ei kuvan ulkonäköä, väriä tai brändioletuksia).
+- Prosessointiasteikko:
+  1 = prosessoimaton
+  2 = minimiprosessoitu
+  3 = prosessoitu
+  4 = ultraprosessoitu
+- Lisää vastaukseen myös kentät:
+  "processingLevel": 1-4,
+  "processingLabel": "prosessoimaton|minimiprosessoitu|prosessoitu|ultraprosessoitu",
+  "processingReason": "lyhyt OCR-perusteinen perustelu"
+` : ""}
+  `;
 
     if (profile?.weight && profile?.height) {
       prompt += `
@@ -589,6 +660,7 @@ KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 - 🍽 Suositeltu annos: X g / ml
 - 🟢 / 🟡 / 🔴
 - 📆 Kuinka usein: X kertaa viikossa / päivässä
+${includeOcrProcessingScale ? `- 🏭 Prosessointiaste (OCR): X/4 - prosessoimaton|minimiprosessoitu|prosessoitu|ultraprosessoitu` : ""}
 
 📌 PERUSTELU:
 1–2 lausetta, joissa mainitaan käyttäjän tavoite ja aikaväli.
@@ -625,6 +697,7 @@ KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
 
 📝 ARVIO  
 🟢 / 🟡 / 🔴 – lyhyt selitys (1–2 lausetta)
+${includeOcrProcessingScale ? `🏭 Prosessointiaste (OCR): X/4 - prosessoimaton|minimiprosessoitu|prosessoitu|ultraprosessoitu` : ""}
 
 🎯 JOHTOPÄÄTÖS  
 Yksi selkeä lause.
@@ -700,6 +773,15 @@ Yksi selkeä lause.
         suggestedName = products.map((p) => p.name).filter(Boolean).join(", ");
       }
 
+      const normalizedProcessingLabel = normalizeProcessingLabel(payload.processingLabel);
+      let processingLevel = normalizeProcessingLevel(payload.processingLevel);
+      if (!processingLevel && normalizedProcessingLabel) {
+        processingLevel = processingLevelFromLabel(normalizedProcessingLabel);
+      }
+      const processingLabel = processingLevel ? processingLabelFromLevel(processingLevel) : "";
+      const processingReason =
+        typeof payload.processingReason === "string" ? payload.processingReason.trim() : "";
+
       return res.json({
         result:
           typeof payload.result === "string"
@@ -708,6 +790,13 @@ Yksi selkeä lause.
         products,
         totalCalories,
         suggestedName,
+        ...(includeOcrProcessingScale && processingLevel
+          ? {
+              processingLevel,
+              processingLabel,
+              processingReason,
+            }
+          : {}),
       });
     }
 
