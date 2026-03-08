@@ -302,6 +302,46 @@ function sanitizeMacros(product = {}, fallbackName = "Tuntematon tuote") {
   return { ...product, name, calories, protein, carbs, sugar, fat };
 }
 
+function buildOcrFallbackResult(products = []) {
+  const first = Array.isArray(products) && products.length ? products[0] : null;
+  if (!first) return "OCR-analyysi tehtiin, mutta vastaus oli puutteellinen. Kokeile selkeämpää kuvaa.";
+
+  return `🟰 RAVINTOARVOT YHTEENSÄ
+🔥 Energia: ${first.calories} kcal
+🥑 Rasva: ${first.fat} g
+🍬 Joista sokerit: ${first.sugar} g
+🍗 Proteiini: ${first.protein} g
+
+📝 ARVIO
+Ravintosisältö tunnistettiin OCR-tekstistä, mutta sanallinen arvio jäi vajaaksi.
+
+🎯 JOHTOPÄÄTÖS
+Tuote tunnistettiin, ja arvot voi tallentaa.`;
+}
+
+function extractOcrResultText(payload, rawText, products) {
+  if (payload && typeof payload === "object") {
+    const candidateFields = ["result", "summary", "text", "analysis", "message"];
+    for (const key of candidateFields) {
+      const value = payload[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+
+  if (typeof rawText === "string" && rawText.trim()) {
+    const cleaned = rawText
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+
+  return buildOcrFallbackResult(products);
+}
+
 function normalizeGoal(goal) {
   return typeof goal === "string" ? goal.trim().toLowerCase() : "";
 }
@@ -781,12 +821,10 @@ Yksi selkeä lause.
       const processingLabel = processingLevel ? processingLabelFromLevel(processingLevel) : "";
       const processingReason =
         typeof payload.processingReason === "string" ? payload.processingReason.trim() : "";
+      const resultText = extractOcrResultText(payload, rawText, products);
 
       return res.json({
-        result:
-          typeof payload.result === "string"
-            ? payload.result.trim()
-            : "Analyysi epäonnistui",
+        result: resultText,
         products,
         totalCalories,
         suggestedName,
@@ -800,18 +838,20 @@ Yksi selkeä lause.
       });
     }
 
+    const fallbackProducts = [
+      sanitizeMacros({
+        name: "Tuntematon tuote",
+        calories: 0,
+        carbs: 0,
+        sugar: 0,
+        protein: 0,
+        fat: 0,
+      }),
+    ];
+
     res.json({
-      result: "❌ Analyysi epäonnistui. Yritä uudelleen tai skannaa selkeämpi kuva.",
-      products: [
-        {
-          name: "Tuntematon tuote",
-          calories: 0,
-          carbs: 0,
-          sugar: 0,
-          protein: 0,
-          fat: 0,
-        },
-      ],
+      result: extractOcrResultText(null, rawText, fallbackProducts),
+      products: fallbackProducts,
       totalCalories: 0,
     });
   } catch (err) {
