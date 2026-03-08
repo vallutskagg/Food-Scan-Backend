@@ -22,8 +22,13 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           # Prefer base64 secret to avoid multiline formatting issues in GitHub UI.
+          # If decoding fails, fall back to multiline secret.
           if [ -n "$HETZNER_SSH_KEY_B64" ]; then
-            printf "%s" "$HETZNER_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+            CLEAN_B64="$(printf "%s" "$HETZNER_SSH_KEY_B64" | tr -d '\r\n\t ')"
+            if ! printf "%s" "$CLEAN_B64" | base64 -d > ~/.ssh/id_ed25519 2>/dev/null; then
+              echo "Invalid HETZNER_SSH_KEY_B64, falling back to HETZNER_SSH_KEY"
+              printf "%s\n" "$HETZNER_SSH_KEY" > ~/.ssh/id_ed25519
+            fi
           else
             printf "%s\n" "$HETZNER_SSH_KEY" > ~/.ssh/id_ed25519
           fi
