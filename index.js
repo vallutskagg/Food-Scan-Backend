@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
 app.use((req, _res, next) => {
-  if (req.path === "/analyze") {
+  if (req.path === "/analyze" || req.path === "/analyze/") {
     console.log(`[analyze] ${req.method} from ${req.ip}`);
   }
   next();
