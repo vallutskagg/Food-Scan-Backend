@@ -1,0 +1,41 @@
+name: Deploy Hetzner
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s" "$HETZNER_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$HETZNER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy on server
+        env:
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+          HETZNER_USER: ${{ secrets.HETZNER_USER }}
+          HETZNER_PORT: ${{ secrets.HETZNER_PORT }}
+        run: |
+          PORT="${HETZNER_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$PORT" "$HETZNER_USER@$HETZNER_HOST" '
+            set -e
+            cd /opt/food-scan-backend
+            git pull --ff-only
+            npm ci --omit=dev
+            systemctl restart food-scan-backend
+            systemctl is-active --quiet food-scan-backend
+          '
