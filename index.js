@@ -426,7 +426,7 @@ function processingLevelFromLabel(label) {
   return null;
 }
 
-function normalizeWeeklyReport(raw) {
+function legacyNormalizeWeeklyReport(raw) {
   const safe = raw && typeof raw === "object" ? raw : {};
   const suggestions = Array.isArray(safe.suggestions)
     ? safe.suggestions
@@ -456,7 +456,7 @@ function normalizeWeeklyReport(raw) {
   };
 }
 
-function buildWeeklyReportFallback(body = {}) {
+function legacyBuildWeeklyReportFallback(body = {}) {
   const goal = body?.data?.goal;
   const totals = body?.data?.totals || {};
   const products = Array.isArray(body?.data?.products) ? body.data.products : [];
@@ -519,18 +519,312 @@ function buildWeeklyReportFallback(body = {}) {
   };
 }
 
-/* ================= ANALYZE ENDPOINT ================= */
-app.post("/analyze", async (req, res) => {
-  try {
-    const { mode, instructions, data: weeklyData, ocrText, profile, mealAdjustments } = req.body;
-    const { imageBase64, mimeType } = resolveImagePayload(req.body);
+const LEVEL_GOOD = "🟢";
+const LEVEL_OK = "🟡";
+const LEVEL_WEAK = "🔴";
 
-    if (mode === "weekly_report") {
-      if (!instructions || typeof instructions !== "string" || !weeklyData || typeof weeklyData !== "object") {
-        return res.status(400).json({ error: "Virheellinen weekly_report pyyntö: instructions ja data vaaditaan." });
-      }
+function scoreToLevel(score) {
+  if (score >= 75) return LEVEL_GOOD;
+  if (score >= 50) return LEVEL_OK;
+  return LEVEL_WEAK;
+}
 
-      const weeklyPrompt = `${instructions.trim()}
+function normalizeSuggestionList(rawSuggestions, minCount, maxCount, fallbackSuggestions) {
+  const cleaned = Array.isArray(rawSuggestions)
+    ? rawSuggestions
+        .filter((s) => typeof s === "string")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, maxCount)
+    : [];
+
+  if (cleaned.length >= minCount) return cleaned;
+  return fallbackSuggestions.slice(0, maxCount);
+}
+
+function normalizeReportResponse(raw, { minSuggestions, maxSuggestions, fallbackSummary, fallbackSuggestions, fallbackScore = 60 } = {}) {
+  const safe = raw && typeof raw === "object" ? raw : {};
+  const score = Math.max(0, Math.min(100, Math.round(normalizeNumber(safe.score, fallbackScore))));
+  const allowedLevels = new Set([LEVEL_GOOD, LEVEL_OK, LEVEL_WEAK]);
+  const level = allowedLevels.has(safe.level) ? safe.level : scoreToLevel(score);
+  const summary = typeof safe.summary === "string" && safe.summary.trim() ? safe.summary.trim() : fallbackSummary;
+  const suggestions = normalizeSuggestionList(safe.suggestions, minSuggestions, maxSuggestions, fallbackSuggestions);
+
+  return { level, score, summary, suggestions };
+}
+
+function normalizeWeeklyReport(raw) {
+  return normalizeReportResponse(raw, {
+    minSuggestions: 2,
+    maxSuggestions: 4,
+    fallbackScore: 62,
+    fallbackSummary:
+      "Viikon tiedot analysoitiin. Jatka tasaista energiansaantia ja pidä makrot tavoitteen mukaisina.",
+    fallbackSuggestions: [
+      "Pidä päivittäinen energiansaanti mahdollisimman tasaisena koko viikon ajan.",
+      "Säädä proteiinia tavoitteen mukaan ja vältä suuria heilahteluja sokerin saannissa.",
+    ],
+  });
+}
+
+function normalizePeriodSummary(raw) {
+  return normalizeReportResponse(raw, {
+    minSuggestions: 3,
+    maxSuggestions: 6,
+    fallbackScore: 60,
+    fallbackSummary:
+      "Koko aikaväli analysoitiin. Jakso onnistui osittain, ja seuraavaan jaksoon kannattaa tehdä selkeät, mitattavat parannukset.",
+    fallbackSuggestions: [
+      "Pidä kirjausaste korkeana koko seuraavan jakson ajan.",
+      "Säädä kaloreita tavoitteesi suuntaan pienin askelin viikko kerrallaan.",
+      "Seuraa makrojen toteumaa viikoittain ja korjaa poikkeamat nopeasti.",
+    ],
+  });
+}
+
+function scoreByRatioDiff(actual, target, goodRatio = 0.08, weakRatio = 0.18, fallback = 60) {
+  if (!(target > 0)) return fallback;
+  const diffRatio = Math.abs(actual - target) / target;
+  if (diffRatio <= goodRatio) return 88;
+  if (diffRatio <= weakRatio) return 68;
+  if (diffRatio <= 0.28) return 48;
+  return 30;
+}
+
+function scoreByDirection(goal, weightChangeKg) {
+  if (!Number.isFinite(weightChangeKg)) return 60;
+  if (goal === "laihdutus") {
+    if (weightChangeKg < -0.2) return 90;
+    if (weightChangeKg <= 0.2) return 65;
+    return 32;
+  }
+  if (goal === "lihasmassa") {
+    if (weightChangeKg > 0.2) return 86;
+    if (weightChangeKg >= -0.2) return 62;
+    return 35;
+  }
+  if (goal === "yllapito") {
+    const drift = Math.abs(weightChangeKg);
+    if (drift <= 0.5) return 86;
+    if (drift <= 1.0) return 66;
+    return 40;
+  }
+  return 60;
+}
+
+function weightedScore(parts = []) {
+  const valid = parts.filter((p) => Number.isFinite(p?.score) && Number.isFinite(p?.weight) && p.weight > 0);
+  if (!valid.length) return 60;
+  const totalWeight = valid.reduce((sum, part) => sum + part.weight, 0);
+  const totalScore = valid.reduce((sum, part) => sum + part.score * part.weight, 0);
+  return Math.max(0, Math.min(100, Math.round(totalScore / totalWeight)));
+}
+
+function topProductByEnergy(products = []) {
+  return products
+    .slice()
+    .sort(
+      (a, b) =>
+        normalizeNumber(b?.calories) * Math.max(1, normalizeNumber(b?.count, 1)) -
+        normalizeNumber(a?.calories) * Math.max(1, normalizeNumber(a?.count, 1))
+    )[0];
+}
+
+function averageMacroScore(totals = {}, dailyMacroTargets = {}) {
+  const pairs = [
+    { actual: normalizeNumber(totals.avgCarbs), target: normalizeNumber(dailyMacroTargets.carbs) },
+    { actual: normalizeNumber(totals.avgSugar), target: normalizeNumber(dailyMacroTargets.sugar) },
+    { actual: normalizeNumber(totals.avgProtein), target: normalizeNumber(dailyMacroTargets.protein) },
+    { actual: normalizeNumber(totals.avgFat), target: normalizeNumber(dailyMacroTargets.fat) },
+  ];
+
+  const valid = pairs.filter((p) => p.target > 0);
+  if (!valid.length) return 60;
+  const sum = valid.reduce((acc, p) => acc + scoreByRatioDiff(p.actual, p.target, 0.1, 0.22, 60), 0);
+  return Math.round(sum / valid.length);
+}
+
+function buildWeeklyReportFallback(body = {}) {
+  const data = body?.data || {};
+  const totals = data.totals || {};
+  const dailyMacroTargets = data.dailyMacroTargets || {};
+  const goal = normalizeGoal(data.goal);
+  const products = Array.isArray(data.products) ? data.products : [];
+  const topProduct = topProductByEnergy(products);
+
+  const avgCalories = normalizeNumber(totals.avgCaloriesPerDay);
+  const dailyTargetCalories = normalizeNumber(data.dailyTargetCalories);
+  const macroScore = averageMacroScore(totals, dailyMacroTargets);
+  const calorieScore = scoreByRatioDiff(avgCalories, dailyTargetCalories, 0.08, 0.18, 62);
+  const weightScore = scoreByDirection(goal, normalizeNumber(data.weightChangeKg, Number.NaN));
+  const productLoadScore = topProduct ? 68 : 74;
+
+  const score = weightedScore([
+    { score: calorieScore, weight: 0.4 },
+    { score: macroScore, weight: 0.25 },
+    { score: weightScore, weight: 0.25 },
+    { score: productLoadScore, weight: 0.1 },
+  ]);
+  const level = scoreToLevel(score);
+
+  let goalHint = "Pidä energia ja makrot mahdollisimman tasaisina koko viikon ajan.";
+  if (goal === "laihdutus") {
+    goalHint = "Pidä kalorit tavoiterajassa ja varmista riittävä proteiini kylläisyyden tueksi.";
+  } else if (goal === "lihasmassa") {
+    goalHint = "Varmista riittävä kokonaisenergia ja pidä proteiinin saanti tasaisena päivän aikana.";
+  } else if (goal === "yllapito") {
+    goalHint = "Pidä kalorit lähellä tavoitetta ja säilytä makrojen tasapaino arjessa.";
+  }
+
+  const topProductHint = topProduct?.name
+    ? `Säädä tuotteen "${topProduct.name}" viikoittaista määrää niin, että se tukee tavoitettasi paremmin.`
+    : "Tarkista eniten käytettyjen tuotteiden annoskoot ja toistuvuus viikon aikana.";
+
+  const sugarTarget = normalizeNumber(dailyMacroTargets.sugar);
+  const avgSugar = normalizeNumber(totals.avgSugar);
+  const sugarHint =
+    sugarTarget > 0 && avgSugar > sugarTarget
+      ? "Laske lisättyä sokeria sisältävien tuotteiden käyttöä ja korvaa osa niistä vähäsokerisilla vaihtoehdoilla."
+      : "Pidä hiilihydraatit ja sokeri linjassa päivän kokonaisenergian kanssa.";
+
+  const summary =
+    score >= 75
+      ? "Viikko oli tavoitteeseen nähden onnistunut. Energiataso, makrot ja painosuunta tukivat kokonaisuutta hyvin."
+      : score >= 50
+      ? "Viikko onnistui osittain. Suunta on oikea, mutta kaloreissa tai makroissa näkyy vielä korjattavaa."
+      : "Viikko jäi tavoitteesta. Energiataso, makrot tai painosuunta eivät olleet vielä riittävän hyvin linjassa tavoitteen kanssa.";
+
+  return {
+    level,
+    score,
+    summary,
+    suggestions: [goalHint, sugarHint, topProductHint].slice(0, 4),
+  };
+}
+
+function buildPeriodSummaryFallback(body = {}) {
+  const data = body?.data || {};
+  const period = data.period || {};
+  const totals = data.totals || {};
+  const dailyMacroTargets = data.dailyMacroTargets || {};
+  const adherence = data.adherence || {};
+  const goal = normalizeGoal(data.goal);
+  const products = Array.isArray(data.products) ? data.products : [];
+  const topProduct = topProductByEnergy(products);
+
+  const totalDays = Math.max(0, Math.round(normalizeNumber(period.totalDays)));
+  const loggedDays = Math.max(0, Math.round(normalizeNumber(period.loggedDays)));
+  const loggingRatePercent =
+    normalizeNumber(period.loggingRatePercent, totalDays > 0 ? (loggedDays / totalDays) * 100 : 0);
+  const calorieHitRate = normalizeNumber(adherence.calorieTargetHitRatePercent);
+  const successEstimate = normalizeNumber(adherence.successEstimatePercent);
+
+  const avgCalories = normalizeNumber(totals.avgCaloriesPerDay);
+  const dailyTargetCalories = normalizeNumber(data.dailyTargetCalories);
+  const calorieScore = scoreByRatioDiff(avgCalories, dailyTargetCalories, 0.08, 0.18, 62);
+  const macroScore = averageMacroScore(totals, dailyMacroTargets);
+  const weightScore = scoreByDirection(goal, normalizeNumber(data.weightChangeKg, Number.NaN));
+
+  const loggingScore = Math.max(0, Math.min(100, Math.round(loggingRatePercent)));
+  const consistencyScore = weightedScore([
+    { score: loggingScore, weight: 0.5 },
+    { score: Math.max(0, Math.min(100, Math.round(calorieHitRate || 60))), weight: 0.3 },
+    { score: Math.max(0, Math.min(100, Math.round(successEstimate || 60))), weight: 0.2 },
+  ]);
+
+  const score = weightedScore([
+    { score: loggingScore, weight: 0.22 },
+    { score: calorieScore, weight: 0.23 },
+    { score: macroScore, weight: 0.2 },
+    { score: weightScore, weight: 0.22 },
+    { score: consistencyScore, weight: 0.13 },
+  ]);
+  const level = scoreToLevel(score);
+
+  const outcomeText =
+    score >= 75 ? "onnistuit hyvin" : score >= 50 ? "onnistuit osittain" : "tavoite jäi vajaaksi";
+  const summary = `Aikaväli ${outcomeText}. Kirjausaste oli ${Math.round(loggingRatePercent)} %, ja kokonaislinja arvioitiin kaloreiden, makrojen, painosuunnan sekä johdonmukaisuuden perusteella.`;
+
+  const suggestions = [];
+  if (loggingRatePercent < 80) {
+    suggestions.push("Nosta kirjausastetta lisäämällä vähintään yksi merkintä jokaiselle päivälle seuraavalla jaksolla.");
+  }
+  if (goal === "laihdutus") {
+    suggestions.push("Pidä energiataso tasaisesti tavoitteen alapuolella maltillisesti ja varmista riittävä proteiini.");
+  } else if (goal === "lihasmassa") {
+    suggestions.push("Nosta energiaa hallitusti treenipäivinä ja pidä proteiinin päiväsaanti tasaisena.");
+  } else {
+    suggestions.push("Pidä päiväkohtaiset kalorit lähellä tavoitetta, jotta paino pysyy vakaana.");
+  }
+
+  const sugarTarget = normalizeNumber(dailyMacroTargets.sugar);
+  const avgSugar = normalizeNumber(totals.avgSugar);
+  if (sugarTarget > 0 && avgSugar > sugarTarget) {
+    suggestions.push("Vähennä korkeasokeristen tuotteiden toistuvuutta ja vaihda osa valinnoista vähäsokerisiin vaihtoehtoihin.");
+  } else {
+    suggestions.push("Säilytä makrojen tasapaino seuraamalla proteiinin, hiilihydraattien ja rasvan päiväkeskiarvoja viikoittain.");
+  }
+
+  if (topProduct?.name) {
+    suggestions.push(`Tee tuotteelle "${topProduct.name}" selkeä annos- tai käyttöfrekvenssin säätö seuraavalle jaksolle.`);
+  }
+
+  suggestions.push("Aseta seuraavalle jaksolle yksi mitattava välitavoite ja tarkista eteneminen kerran viikossa.");
+
+  return {
+    level,
+    score,
+    summary,
+    suggestions: suggestions.slice(0, 6),
+  };
+}
+
+function parseModelJson(rawText = "") {
+  let cleanedText = String(rawText || "").trim();
+  if (cleanedText.startsWith("```json")) {
+    cleanedText = cleanedText.replace(/^```json\s*/i, "");
+  } else if (cleanedText.startsWith("```")) {
+    cleanedText = cleanedText.replace(/^```\s*/, "");
+  }
+  if (cleanedText.endsWith("```")) {
+    cleanedText = cleanedText.replace(/\s*```$/, "");
+  }
+
+  const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+  const textToParse = jsonMatch ? jsonMatch[0] : cleanedText;
+  return JSON.parse(textToParse);
+}
+
+function buildReportPrompt(mode, instructions, data) {
+  if (mode === "period_summary") {
+    return `${instructions.trim()}
+
+Palauta VAIN JSON täsmälleen tällä rakenteella:
+{
+  "level": "🟢",
+  "score": 78,
+  "summary": "Koko aikavälin yhteenveto suomeksi: mitä meni hyvin ja mitä kannattaa parantaa.",
+  "suggestions": [
+    "Konkreettinen ehdotus 1",
+    "Konkreettinen ehdotus 2",
+    "Konkreettinen ehdotus 3"
+  ]
+}
+
+Säännöt:
+- Arvioi koko jakson onnistuminen, ei vain yksittäistä viikkoa.
+- Huomioi kirjausaste (loggedDays/totalDays), kalori- ja makrotavoitteet, painosuunnan sopivuus tavoitteeseen ja jakson johdonmukaisuus.
+- Taso: 🟢 = hyvä linjaus tavoitteeseen, 🟡 = kohtalainen, 🔴 = heikko.
+- Yhteenvedossa kerro luonnollisella suomella onnistuiko jakso hyvin, osittain vai jäikö tavoite vajaaksi.
+- Ehdotuksia 3-6, lyhyitä, konkreettisia ja turvallisia.
+- Ei diagnooseja. Ei vaarallisia laihdutusohjeita.
+- Ei markdownia eikä muuta tekstiä JSONin ulkopuolelle.
+
+Data:
+${JSON.stringify(data, null, 2)}`;
+  }
+
+  return `${instructions.trim()}
 
 Palauta VAIN JSON täsmälleen tällä rakenteella:
 {
@@ -544,18 +838,35 @@ Palauta VAIN JSON täsmälleen tällä rakenteella:
 }
 
 Säännöt:
-- Arvioi tuotteiden käyttö, kalorit, makrot (carbs, sugar, protein, fat), painon muutos ja käyttäjän tavoite.
-- Taso: 🟢 hyvä linjaus tavoitteeseen, 🟡 kohtalainen, 🔴 heikko.
+- Arvioi tuotteiden käyttö, kalorit, makrot (carbs, sugar, protein, fat), painon muutos ja tavoite.
+- Taso: 🟢 = hyvä linjaus tavoitteeseen, 🟡 = kohtalainen, 🔴 = heikko.
 - Ehdotuksia 2-4, lyhyitä ja konkreettisia.
-- Lisää tuotekohtainen ehdotus, jos data tukee sitä.
-- Sovita tavoitteen mukaan:
-  - laihdutus: kalorien hallinta + proteiini
+- Lisää tuotekohtainen ehdotus, kun data tukee sitä.
+- Sovita tavoitteeseen:
+  - laihdutus: kalorien hallinta + proteiinituki
   - yllapito: tasainen saanti + monipuolinen tasapaino
-  - lihasmassa: riittävä energia + proteiini
+  - lihasmassa: riittävä energia + proteiinituki
 - Ei diagnooseja. Ei vaarallisia painonpudotusohjeita.
+- Ei markdownia eikä muuta tekstiä JSONin ulkopuolelle.
 
 Data:
-${JSON.stringify(weeklyData, null, 2)}`;
+${JSON.stringify(data, null, 2)}`;
+}
+
+/* ================= ANALYZE ENDPOINT ================= */
+app.post("/analyze", async (req, res) => {
+  try {
+    const { mode, instructions, data: reportData, ocrText, profile, mealAdjustments } = req.body;
+    const { imageBase64, mimeType } = resolveImagePayload(req.body);
+
+    if (mode === "weekly_report" || mode === "period_summary") {
+      if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {
+        return res.status(400).json({
+          error: `Virheellinen ${mode} pyyntö: instructions ja data vaaditaan.`,
+        });
+      }
+
+      const reportPrompt = buildReportPrompt(mode, instructions, reportData);
 
       try {
         const response = await fetch(
@@ -567,7 +878,7 @@ ${JSON.stringify(weeklyData, null, 2)}`;
               "X-goog-api-key": API_KEY,
             },
             body: JSON.stringify({
-              contents: [{ role: "user", parts: [{ text: weeklyPrompt }] }],
+              contents: [{ role: "user", parts: [{ text: reportPrompt }] }],
             }),
           }
         );
@@ -578,24 +889,15 @@ ${JSON.stringify(weeklyData, null, 2)}`;
 
         const aiData = await response.json();
         const rawText = aiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-        let cleanedText = rawText.trim();
-        if (cleanedText.startsWith("```json")) {
-          cleanedText = cleanedText.replace(/^```json\s*/i, "");
-        } else if (cleanedText.startsWith("```")) {
-          cleanedText = cleanedText.replace(/^```\s*/, "");
-        }
-        if (cleanedText.endsWith("```")) {
-          cleanedText = cleanedText.replace(/\s*```$/, "");
-        }
-
-        const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
-        const textToParse = jsonMatch ? jsonMatch[0] : cleanedText;
-        const parsed = JSON.parse(textToParse);
-        return res.status(200).json(normalizeWeeklyReport(parsed));
+        const parsed = parseModelJson(rawText);
+        const normalized =
+          mode === "period_summary" ? normalizePeriodSummary(parsed) : normalizeWeeklyReport(parsed);
+        return res.status(200).json(normalized);
       } catch (err) {
-        console.error("weekly_report failed, using fallback:", err?.message || err);
-        return res.status(200).json(buildWeeklyReportFallback(req.body));
+        console.error(`${mode} failed, using fallback:`, err?.message || err);
+        const fallback =
+          mode === "period_summary" ? buildPeriodSummaryFallback(req.body) : buildWeeklyReportFallback(req.body);
+        return res.status(200).json(fallback);
       }
     }
 
@@ -661,12 +963,13 @@ ${JSON.stringify(weeklyData, null, 2)}`;
 - ÄLÄ mainitse sanoja: JSON, kenttä, ohje, prompt, analyysi, malli
 
 ⚠️ KRIITTINEN SÄÄNTÖ KALOREISTA JA MAKROISTA:
-- Palauta AINA calories ja makrot muodossa per 100 g TAI per 100 ml (ei kulutetun annoksen mukaan)
-- Jos taulukossa on sekä per annos että per 100g/100ml, käytä aina per 100g/100ml arvoja
-- Jos taulukossa näkyy vain annoskohtainen arvo, muunna se per 100g/100ml muotoon, jos annoskoko on pääteltävissä
-- Jos tieto on epävarma, palauta silti best-effort per 100g/100ml numeeriset arvot
-- Useamman tuotteen tapauksessa: jokainen products-rivi on per 100g/100ml samassa muodossa
-- totalCalories tulee olla products-listan calories-arvojen summa (eli per-100-arvojen summa)
+- Palauta aina lopulliset calories- ja makroarvot kulutetulle annokselle.
+- Jos OCR:sta l?ytyy selke? annoskoko tai kulutettu m??r?, suosi annosarvoja.
+- Muussa tapauksessa k?yt? per 100g/100ml arvoja ja skaalaa ne havaittuun m??r??n.
+- Jos per annos ja per 100g/100ml ovat molemmat saatavilla, valitse kulutettua m??r?? parhaiten vastaava tulkinta.
+- Jos tieto on epävarma, palauta best-effort arvot ja pidä makrokentät mukana.
+- Useamman tuotteen tapauksessa jokainen products-rivi kuvaa kulutettua entry? samassa muodossa.
+- totalCalories tulee olla products-listan calories-arvojen summa.
 
 PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
 
@@ -694,8 +997,8 @@ HUOM:
 - sugar = sugars subset (joista sokereita / Sugars / of which sugars)
 - Jos sugar-arvo puuttuu, palauta sugar: 0 (älä jätä kenttää pois)
 - Tunnista desimaalit sekä muodossa 12.5 g että 12,5 g
-- Palauta arvot aina per 100g tai per 100ml (ei kulutettua annosta)
-- Jos OCR kertoo sekä painon/tilavuuden että kokonaissisällön, laske tarvittaessa per 100g/100ml
+- Palauta carbs, sugar, protein ja fat aina kulutetulle annokselle.
+- Jos käytettävissä on vain per 100g/100ml tiedot, laske kulutettu annos skaalamalla OCR:sta havaitulla määrällä.
 - Validointi: kaikki makrot >= 0, sugar <= carbs; jos sugar > carbs, aseta sugar = carbs
 - Sugar-indikaattorit: joista sokereita, sokerit, sokeria, sugars, of which sugars
 - Carbs-indikaattorit: hiilihydraatit, carbohydrate, carbohydrates
