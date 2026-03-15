@@ -963,12 +963,12 @@ app.post("/analyze", async (req, res) => {
 - ÄLÄ mainitse sanoja: JSON, kenttä, ohje, prompt, analyysi, malli
 
 ⚠️ KRIITTINEN SÄÄNTÖ KALOREISTA JA MAKROISTA:
-- Palauta aina lopulliset calories- ja makroarvot kulutetulle annokselle.
-- Jos OCR:sta l?ytyy selke? annoskoko tai kulutettu m??r?, suosi annosarvoja.
-- Muussa tapauksessa k?yt? per 100g/100ml arvoja ja skaalaa ne havaittuun m??r??n.
-- Jos per annos ja per 100g/100ml ovat molemmat saatavilla, valitse kulutettua m??r?? parhaiten vastaava tulkinta.
-- Jos tieto on epävarma, palauta best-effort arvot ja pidä makrokentät mukana.
-- Useamman tuotteen tapauksessa jokainen products-rivi kuvaa kulutettua entry? samassa muodossa.
+- Kayta aina per 100g/100ml ravintoarvoja ensisijaisena lahteena, kun ne loytyvat OCR-tekstista.
+- Jos seka per annos etta per 100g/100ml ovat saatavilla, sivuuta per annos -arvot ja laske aina per 100g/100ml pohjalta.
+- Jos OCR:sta loytyy kulutettu maara (g/ml), skaalaa per 100g/100ml arvot siihen maaraan.
+- Jos kulutettua maaraa ei loydy, kayta oletuksena 100 g/ml (eli palauta per 100g/100ml arvot sellaisenaan).
+- Jos tieto on epavarma, palauta best-effort arvot ja pida makrokentat mukana.
+- Useamman tuotteen tapauksessa jokainen products-rivi kuvaa kulutettua entrya samassa muodossa.
 - totalCalories tulee olla products-listan calories-arvojen summa.
 
 PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
@@ -997,8 +997,9 @@ HUOM:
 - sugar = sugars subset (joista sokereita / Sugars / of which sugars)
 - Jos sugar-arvo puuttuu, palauta sugar: 0 (älä jätä kenttää pois)
 - Tunnista desimaalit sekä muodossa 12.5 g että 12,5 g
-- Palauta carbs, sugar, protein ja fat aina kulutetulle annokselle.
-- Jos käytettävissä on vain per 100g/100ml tiedot, laske kulutettu annos skaalamalla OCR:sta havaitulla määrällä.
+- Laske carbs, sugar, protein ja fat aina per 100g/100ml arvoista.
+- Jos OCR:sta loytyy kulutettu maara, skaalaa arvot siihen maaraan.
+- Jos kulutettu maara puuttuu, kayta oletuksena 100 g/ml.
 - Validointi: kaikki makrot >= 0, sugar <= carbs; jos sugar > carbs, aseta sugar = carbs
 - Sugar-indikaattorit: joista sokereita, sokerit, sokeria, sugars, of which sugars
 - Carbs-indikaattorit: hiilihydraatit, carbohydrate, carbohydrates
