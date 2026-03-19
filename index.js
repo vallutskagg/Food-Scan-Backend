@@ -17,6 +17,18 @@ const API_KEY = process.env.GEMINI_API_KEY;
 
 /* ================= AI IMAGE HELPERS ================= */
 
+const ALLOWED_PORTION_MULTIPLIERS = new Set([0.5, 0.7, 1, 1.2, 1.4]);
+const ALLOWED_SERVING_CONTEXTS = new Set(["home", "restaurant", "readymeal"]);
+const MAX_MEAL_DESCRIPTION_LENGTH = 180;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function resolveImagePayload(body = {}) {
   const rawImage = body?.imageBase64 ?? body?.image ?? body?.base64Image ?? body?.photoBase64 ?? "";
   if (typeof rawImage !== "string") {
@@ -42,10 +54,84 @@ function resolveImagePayload(body = {}) {
   };
 }
 
-// Vision-mallin analyysi: tunnistaa ruokalajin ja karkeat makrot
-async function analyzeImage(imageBase64, mimeType = "image/jpeg") {
-  const prompt = `Analysoi KUVA ruoka-annoksesta (AI-kuva-analyysi, ei OCR-tekstiä) ja palauta arvio NORMAALISTA annoskoosta (noin 300–400 g) seuraavassa JSON-muodossa:
+// Meal context validation and image AI payload builders
+function normalizeMealContext(body = {}) {
+  const hasMealAdjustments = body && Object.prototype.hasOwnProperty.call(body, "mealAdjustments");
+  const mealAdjustments = body?.mealAdjustments;
+  if (hasMealAdjustments && mealAdjustments != null && !isPlainObject(mealAdjustments)) {
+    return { error: "mealAdjustments must be an object when provided" };
+  }
 
+  const adjustments = isPlainObject(mealAdjustments) ? mealAdjustments : {};
+
+  const portionMultiplierRaw = adjustments?.portionMultiplier;
+  const portionMultiplier =
+    typeof portionMultiplierRaw === "number" &&
+    Number.isFinite(portionMultiplierRaw) &&
+    ALLOWED_PORTION_MULTIPLIERS.has(portionMultiplierRaw)
+      ? portionMultiplierRaw
+      : 1;
+
+  const oilAdded = typeof adjustments?.oilAdded === "boolean" ? adjustments.oilAdded : false;
+
+  const servingContextRaw = adjustments?.servingContext;
+  const servingContext =
+    typeof servingContextRaw === "string" && ALLOWED_SERVING_CONTEXTS.has(servingContextRaw)
+      ? servingContextRaw
+      : "home";
+
+  const adjustmentPercentRaw = Number(adjustments?.adjustmentPercent ?? 0);
+  const adjustmentPercent = Number.isFinite(adjustmentPercentRaw)
+    ? clampNumber(adjustmentPercentRaw, -20, 20)
+    : 0;
+
+  const mealDescriptionRaw =
+    typeof adjustments?.mealDescription === "string"
+      ? adjustments.mealDescription
+      : typeof body?.mealDescription === "string"
+        ? body.mealDescription
+        : "";
+  const mealDescription = mealDescriptionRaw.trim().slice(0, MAX_MEAL_DESCRIPTION_LENGTH);
+
+  return {
+    mealContext: {
+      portionMultiplier,
+      oilAdded,
+      servingContext,
+      adjustmentPercent,
+      ...(mealDescription ? { mealDescription } : {}),
+    },
+  };
+}
+
+function buildMealContextInstructionText(mealContext) {
+  const mealDescription = JSON.stringify(mealContext?.mealDescription || "(ei annettu)");
+
+  return `Kayttajan annosvalinnat:
+- portionMultiplier: ${mealContext.portionMultiplier}
+- oilAdded: ${mealContext.oilAdded}
+- servingContext: ${mealContext.servingContext}
+- adjustmentPercent: ${mealContext.adjustmentPercent}
+- mealDescription: ${mealDescription}
+
+Sovella valinnat arvioon:
+1) Tunnista ruoka ensisijaisesti kuvasta.
+2) Saada annoskokoarvio portionMultiplierin mukaan.
+3) Huomioi oljylisa, jos oilAdded=true.
+4) Huomioi servingContext kaloritiheyden ja epavarmuuden tulkinnassa.
+5) Sovella adjustmentPercent lopulliseen energia-arvioon.`;
+}
+
+function buildImageAnalyzeRequestPayload({ imageBase64, mimeType = "image/jpeg", mealContext, profile }) {
+  const healthClassGreen = "\u{1F7E2}";
+  const profileText =
+    isPlainObject(profile) && Object.keys(profile).length
+      ? `\n\nKayttajan profiili (valinnainen):\n${JSON.stringify(profile, null, 2)}`
+      : "";
+
+  const prompt = `Analysoi KUVA ruoka-annoksesta ja palauta arvio ANNOSVALINNAT HUOMIOIDEN.
+
+Palauta VAIN JSON seuraavassa muodossa:
 {
   "foodName": "Ruoan nimi",
   "calories": 650,
@@ -53,17 +139,43 @@ async function analyzeImage(imageBase64, mimeType = "image/jpeg") {
   "carbs": 60,
   "sugar": 0,
   "fat": 20,
-  "healthClass": "🟢",
-  "source": "image-ai"
+  "healthClass": "${healthClassGreen}"
 }
 
-- foodName: lyhyt, arkikielinen ruokalajin nimi (esim. "Kana-riisiannos")
-- calories, protein, carbs, fat: karkea arvio yhdestä normaalista annoksesta
-- sugar: arvioitu sokerin määrä grammoina samasta annoksesta (0 jos ei tiedossa)
-- healthClass: 🟢 (pääosin terveellinen), 🟡 (ok arjessa), 🔴 (raskas/epäterveellinen)
-- source: merkkijono, jonka arvon tulee olla täsmälleen "image-ai" (vain sisäiseen käyttöön)
+Saannot:
+- Tunnista ruoka kuvasta.
+- Laske kalorit ja makrot annoskontekstin perusteella.
+- Pida sugar <= carbs.
+- Kayta pyoristettyja numeroita.
 
-Palauta VAIN JSON, ei mitään muuta tekstiä.`;
+${buildMealContextInstructionText(mealContext)}${profileText}`;
+
+  return {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType,
+              data: imageBase64,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+// Vision-mallin analyysi: kuva + annoskonteksti samassa pyynnossa
+async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg", mealContext, profile }) {
+  const requestPayload = buildImageAnalyzeRequestPayload({
+    imageBase64,
+    mimeType,
+    mealContext,
+    profile,
+  });
 
   const response = await fetch(
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
@@ -73,118 +185,43 @@ Palauta VAIN JSON, ei mitään muuta tekstiä.`;
         "Content-Type": "application/json",
         "X-goog-api-key": API_KEY,
       },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType,
-                  data: imageBase64,
-                },
-              },
-            ],
-          },
-        ],
-      }),
+      body: JSON.stringify(requestPayload),
     }
   );
 
   if (!response.ok) {
     const text = await response.text();
     console.error("Gemini image analyze API error:", response.status, text);
-    throw new Error(text || "Vision-analyysi epäonnistui");
+    throw new Error(text || "Vision-analyysi epaonnistui");
   }
 
   const data = await response.json();
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-  let cleanedText = rawText.trim();
-  if (cleanedText.startsWith("```json")) {
-    cleanedText = cleanedText.replace(/^```json\s*/i, "");
-  } else if (cleanedText.startsWith("```")) {
-    cleanedText = cleanedText.replace(/^```\s*/, "");
-  }
-  if (cleanedText.endsWith("```")) {
-    cleanedText = cleanedText.replace(/\s*```$/, "");
-  }
-
-  const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
-  const result = JSON.parse(jsonMatch ? jsonMatch[0] : cleanedText);
+  const parsed = parseModelJson(rawText);
+  const macros = sanitizeMacros(
+    {
+      name: parsed?.foodName || parsed?.name || "Tuntematon annos",
+      calories: parsed?.calories,
+      protein: parsed?.protein,
+      carbs: parsed?.carbs,
+      sugar: parsed?.sugar,
+      fat: parsed?.fat,
+    },
+    "Tuntematon annos"
+  );
 
   return {
-    foodName: result.foodName || "Tuntematon annos",
-    calories: Number(result.calories) || 0,
-    protein: Number(result.protein) || 0,
-    carbs: Number(result.carbs) || 0,
-    sugar: Number(result.sugar) || 0,
-    fat: Number(result.fat) || 0,
-    healthClass: result.healthClass || "🟡",
+    foodName: macros.name,
+    calories: macros.calories,
+    protein: macros.protein,
+    carbs: macros.carbs,
+    sugar: macros.sugar,
+    fat: macros.fat,
+    healthClass:
+      typeof parsed?.healthClass === "string" && parsed.healthClass.trim()
+        ? parsed.healthClass.trim()
+        : "\u{1F7E1}",
   };
-}
-
-// Annoskokosäädöt: frontin mealAdjustments-olio
-// mealAdjustments: { portionMultiplier, oilAdded, servingContext, adjustmentPercent }
-function applyMealAdjustments(baseData, mealAdjustments = {}) {
-  const adjusted = { ...baseData };
-
-  const {
-    portionMultiplier = 1,
-    oilAdded = false,
-    servingContext = "home",
-    adjustmentPercent = 0,
-  } = mealAdjustments || {};
-
-  // Annoskoko (esim. 0.5, 0.7, 1, 1.2, 1.4)
-  const portionFactor = Number(portionMultiplier) || 1;
-
-  adjusted.calories = Math.round(adjusted.calories * portionFactor);
-  adjusted.protein = Math.round(adjusted.protein * portionFactor);
-  adjusted.carbs = Math.round(adjusted.carbs * portionFactor);
-  adjusted.sugar = Math.round((adjusted.sugar || 0) * portionFactor);
-  adjusted.fat = Math.round(adjusted.fat * portionFactor);
-
-  // Lisätty öljy (~1 rkl)
-  if (oilAdded) {
-    adjusted.calories += 100;
-    adjusted.fat += 11;
-  }
-
-  // Tarjoilukonteksti: valmisruoka ja ravintola-annos hieman raskaampia
-  if (servingContext === "readymeal") {
-    adjusted.calories = Math.round(adjusted.calories * 1.1);
-    adjusted.protein = Math.round(adjusted.protein * 1.1);
-    adjusted.carbs = Math.round(adjusted.carbs * 1.1);
-    adjusted.sugar = Math.round((adjusted.sugar || 0) * 1.1);
-    adjusted.fat = Math.round(adjusted.fat * 1.1);
-  } else if (servingContext === "restaurant") {
-    adjusted.calories = Math.round(adjusted.calories * 1.2);
-    adjusted.protein = Math.round(adjusted.protein * 1.1);
-    adjusted.carbs = Math.round(adjusted.carbs * 1.1);
-    adjusted.sugar = Math.round((adjusted.sugar || 0) * 1.1);
-    adjusted.fat = Math.round(adjusted.fat * 1.2);
-  }
-
-  // Manuaalinen %-säätö (-20 … +20)
-  const percent = Number(adjustmentPercent) || 0;
-  if (percent !== 0) {
-    const factor = 1 + percent / 100;
-    adjusted.calories = Math.round(adjusted.calories * factor);
-    adjusted.protein = Math.round(adjusted.protein * factor);
-    adjusted.carbs = Math.round(adjusted.carbs * factor);
-    adjusted.sugar = Math.round((adjusted.sugar || 0) * factor);
-    adjusted.fat = Math.round(adjusted.fat * factor);
-  }
-
-  adjusted.calories = Math.max(0, adjusted.calories || 0);
-  adjusted.protein = Math.max(0, adjusted.protein || 0);
-  adjusted.carbs = Math.max(0, adjusted.carbs || 0);
-  adjusted.fat = Math.max(0, adjusted.fat || 0);
-  adjusted.sugar = Math.max(0, Math.min(adjusted.sugar || 0, adjusted.carbs || 0));
-
-  return adjusted;
 }
 
 // Ylläpitokaloritarve (BMR + aktiivisuus)
@@ -856,8 +893,14 @@ ${JSON.stringify(data, null, 2)}`;
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
   try {
-    const { mode, instructions, data: reportData, ocrText, profile, mealAdjustments } = req.body;
-    const { imageBase64, mimeType } = resolveImagePayload(req.body);
+    const requestBody = req.body ?? {};
+    const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
+    const { imageBase64, mimeType } = resolveImagePayload(requestBody);
+    const hasImageSignal =
+      Boolean(imageBase64) ||
+      Object.prototype.hasOwnProperty.call(requestBody, "imageBase64") ||
+      Object.prototype.hasOwnProperty.call(requestBody, "mealAdjustments") ||
+      Object.prototype.hasOwnProperty.call(requestBody, "mealDescription");
 
     if (mode === "weekly_report" || mode === "period_summary") {
       if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {
@@ -902,14 +945,35 @@ app.post("/analyze", async (req, res) => {
     }
 
     // AI-kuva-analyysi (AI-kameranappi)
-    if (imageBase64) {
-      console.log("mealAdjustments from client:", mealAdjustments);
-      const baseData = await analyzeImage(imageBase64, mimeType);
-      const adjusted = applyMealAdjustments(baseData, mealAdjustments);
-      const hasProfile = profile?.weight && profile?.height;
-      const resultText = hasProfile
-        ? buildProfileAwareText(adjusted, profile)
-        : buildGenericText(adjusted);
+    if (hasImageSignal) {
+      if (!imageBase64 || typeof imageBase64 !== "string" || !imageBase64.trim()) {
+        return res.status(400).json({ error: "imageBase64 is required and must be a non-empty string" });
+      }
+
+      const mealContextResult = normalizeMealContext(requestBody);
+      if (mealContextResult.error) {
+        return res.status(400).json({ error: mealContextResult.error });
+      }
+
+      const mealContext = mealContextResult.mealContext;
+      const hasProfile = isPlainObject(profile) && Object.keys(profile).length > 0;
+
+      console.log("[analyze:image] payload summary:", {
+        hasImageBase64: Boolean(imageBase64),
+        imageLength: imageBase64.length,
+        mealContext,
+        hasProfile,
+      });
+
+      const adjusted = await analyzeImageWithMealContext({
+        imageBase64,
+        mimeType,
+        mealContext,
+        profile: hasProfile ? profile : undefined,
+      });
+
+      const hasProfileForText = profile?.weight && profile?.height;
+      const resultText = hasProfileForText ? buildProfileAwareText(adjusted, profile) : buildGenericText(adjusted);
 
       return res.json({
         // Käyttäjälle näytettävä analyysiteksti
@@ -1203,6 +1267,10 @@ Yksi selkeä lause.
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Backend käynnissä portissa ${PORT}`);
-});
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Backend käynnissä portissa ${PORT}`);
+  });
+}
+
+export { app, buildImageAnalyzeRequestPayload, normalizeMealContext, resolveImagePayload };
