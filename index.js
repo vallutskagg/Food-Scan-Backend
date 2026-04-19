@@ -898,12 +898,14 @@ app.post("/analyze", async (req, res) => {
     const requestBody = req.body ?? {};
     const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
     const { imageBase64, mimeType } = resolveImagePayload(requestBody);
+    const normalizedOcrText = typeof ocrText === "string" ? ocrText.trim() : "";
+    const hasOcrText = normalizedOcrText.length > 0;
     const hasImageField =
       Object.prototype.hasOwnProperty.call(requestBody, "imageBase64") ||
       Object.prototype.hasOwnProperty.call(requestBody, "image") ||
       Object.prototype.hasOwnProperty.call(requestBody, "base64Image") ||
       Object.prototype.hasOwnProperty.call(requestBody, "photoBase64");
-    const hasImageSignal = Boolean(imageBase64) || hasImageField;
+    const hasImageSignal = Boolean(imageBase64) || (hasImageField && !hasOcrText);
 
     if (mode === "weekly_report" || mode === "period_summary") {
       if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {
@@ -1008,7 +1010,7 @@ app.post("/analyze", async (req, res) => {
     }
 
     /* ================= OCR ANALYSIS ================= */
-    if (!ocrText) {
+    if (!hasOcrText) {
       return res.status(400).json({
         error: "OCR-teksti puuttuu",
         details: "Anna joko ocrText tai imageBase64 (myos data:image/...;base64,... kelpaa).",
@@ -1097,7 +1099,7 @@ ${profile.timeframe ? `- Aikajänne: ${profile.timeframe} kuukautta` : ""}
 
 TUOTTEEN OCR-TEKSTI:
 """
-${ocrText}
+${normalizedOcrText}
 """
 
 KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
@@ -1129,7 +1131,7 @@ Kirjoita lyhyesti ja konkreettisesti, mitä käyttäjä voi vaihtaa mihin.
 
 TUOTTEEN OCR-TEKSTI:
 """
-${ocrText}
+${normalizedOcrText}
 """
 
 KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):

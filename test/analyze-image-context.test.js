@@ -222,6 +222,25 @@ await withServer(async () => {
     assert.equal(Boolean(imagePart), false);
     assert.match(textPart, /ANALYYSIMENETELMÄ: OCR-TEKSTI|ANALYYSIMENETELMA: OCR-TEKSTI/);
   });
+  await runCase("6) OCR toimii vaikka imageBase64 on tyhja", async () => {
+    stubModelFetch();
+
+    const response = await postAnalyze({
+      imageBase64: "   ",
+      ocrText: "Energia 180 kcal / 100 g, Hiilihydraatit 15 g, joista sokereita 4 g",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 1);
+
+    const callPayload = JSON.parse(modelCalls[0].options.body);
+    const parts = callPayload?.contents?.[0]?.parts || [];
+    const textPart = parts.find((part) => typeof part.text === "string")?.text || "";
+    const imagePart = parts.find((part) => part.inlineData);
+
+    assert.equal(Boolean(imagePart), false);
+    assert.match(textPart, /OCR-TEKSTI/);
+  });
 });
 
 if (process.exitCode && process.exitCode !== 0) {
