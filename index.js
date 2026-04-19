@@ -14,6 +14,8 @@ app.use((req, _res, next) => {
 });
 
 const API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || "").trim() || "gemini-2.5-flash";
+const GEMINI_GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 /* ================= AI IMAGE HELPERS ================= */
 
@@ -178,7 +180,7 @@ async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg
   });
 
   const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+    GEMINI_GENERATE_CONTENT_URL,
     {
       method: "POST",
       headers: {
@@ -913,7 +915,7 @@ app.post("/analyze", async (req, res) => {
 
       try {
         const response = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+          GEMINI_GENERATE_CONTENT_URL,
           {
             method: "POST",
             headers: {
@@ -1148,7 +1150,7 @@ Yksi selkeä lause.
     }
 
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      GEMINI_GENERATE_CONTENT_URL,
       {
         method: "POST",
         headers: {
