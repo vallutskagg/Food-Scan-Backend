@@ -898,11 +898,12 @@ app.post("/analyze", async (req, res) => {
     const requestBody = req.body ?? {};
     const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
     const { imageBase64, mimeType } = resolveImagePayload(requestBody);
-    const hasImageSignal =
-      Boolean(imageBase64) ||
+    const hasImageField =
       Object.prototype.hasOwnProperty.call(requestBody, "imageBase64") ||
-      Object.prototype.hasOwnProperty.call(requestBody, "mealAdjustments") ||
-      Object.prototype.hasOwnProperty.call(requestBody, "mealDescription");
+      Object.prototype.hasOwnProperty.call(requestBody, "image") ||
+      Object.prototype.hasOwnProperty.call(requestBody, "base64Image") ||
+      Object.prototype.hasOwnProperty.call(requestBody, "photoBase64");
+    const hasImageSignal = Boolean(imageBase64) || hasImageField;
 
     if (mode === "weekly_report" || mode === "period_summary") {
       if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {

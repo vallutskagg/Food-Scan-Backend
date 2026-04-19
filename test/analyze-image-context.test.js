@@ -199,6 +199,29 @@ await withServer(async () => {
     assert.equal(modelCalls.length, 0);
     assert.equal(response.body?.error, "imageBase64 is required and must be a non-empty string");
   });
+
+  await runCase("5) OCR toimii vaikka mealAdjustments ja mealDescription mukana", async () => {
+    stubModelFetch();
+
+    const response = await postAnalyze({
+      ocrText: "Energia 220 kcal / 100 g, Hiilihydraatit 20 g, joista sokereita 5 g",
+      mealAdjustments: {
+        portionMultiplier: 1.2,
+      },
+      mealDescription: "OCR-testi",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 1);
+
+    const callPayload = JSON.parse(modelCalls[0].options.body);
+    const parts = callPayload?.contents?.[0]?.parts || [];
+    const textPart = parts.find((part) => typeof part.text === "string")?.text || "";
+    const imagePart = parts.find((part) => part.inlineData);
+
+    assert.equal(Boolean(imagePart), false);
+    assert.match(textPart, /ANALYYSIMENETELMÄ: OCR-TEKSTI|ANALYYSIMENETELMA: OCR-TEKSTI/);
+  });
 });
 
 if (process.exitCode && process.exitCode !== 0) {
