@@ -9,23 +9,24 @@ const { app } = await import("../index.js");
 let modelCalls = [];
 let server;
 let baseUrl;
+const DEFAULT_MODEL_TEXT = JSON.stringify({
+  foodName: "Kana-riisiannos",
+  calories: 620,
+  protein: 38,
+  carbs: 62,
+  sugar: 4,
+  fat: 19,
+  healthClass: "\u{1F7E2}",
+});
 
-function buildMockModelResponse() {
+function buildMockModelResponse(responseText = DEFAULT_MODEL_TEXT) {
   return {
     candidates: [
       {
         content: {
           parts: [
             {
-              text: JSON.stringify({
-                foodName: "Kana-riisiannos",
-                calories: 620,
-                protein: 38,
-                carbs: 62,
-                sugar: 4,
-                fat: 19,
-                healthClass: "\u{1F7E2}",
-              }),
+              text: responseText,
             },
           ],
         },
@@ -34,13 +35,13 @@ function buildMockModelResponse() {
   };
 }
 
-function stubModelFetch() {
+function stubModelFetch({ responseText = DEFAULT_MODEL_TEXT } = {}) {
   modelCalls = [];
   globalThis.fetch = async (url, options = {}) => {
     modelCalls.push({ url, options });
     return {
       ok: true,
-      json: async () => buildMockModelResponse(),
+      json: async () => buildMockModelResponse(responseText),
       text: async () => "",
     };
   };
@@ -240,6 +241,84 @@ await withServer(async () => {
 
     assert.equal(Boolean(imagePart), false);
     assert.match(textPart, /OCR-TEKSTI/);
+  });
+
+  await runCase("7) text_estimate onnistuu ilman oikeaa kuvaa ja palauttaa totalCalories", async () => {
+    stubModelFetch({
+      responseText: JSON.stringify({
+        name: "Hampurilainen",
+        totalCalories: 780,
+        confidence: "medium",
+        reasoning: "Annoskerroin huomioitu.",
+      }),
+    });
+
+    const response = await postAnalyze({
+      mode: "text_estimate",
+      ocrText: "Tuote: hampurilainen",
+      mealAdjustments: {
+        portionMultiplier: 1.4,
+      },
+      imageBase64:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2NgYGD4DwABBAEAe2fWJwAAAABJRU5ErkJggg==",
+      data: {
+        name: "hampurilainen",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 1);
+    assert.equal(response.body?.totalCalories, 780);
+    assert.equal(response.body?.products?.[0]?.calories, 780);
+    assert.match(response.body?.result || "", /kcal/i);
+
+    const callPayload = JSON.parse(modelCalls[0].options.body);
+    const parts = callPayload?.contents?.[0]?.parts || [];
+    const textPart = parts.find((part) => typeof part.text === "string")?.text || "";
+    const imagePart = parts.find((part) => part.inlineData);
+
+    assert.equal(Boolean(imagePart), false);
+    assert.match(textPart, /portionMultiplier: 1\.4/);
+  });
+
+  await runCase("8) text_estimate ilman ocrText -> 400", async () => {
+    stubModelFetch();
+
+    const response = await postAnalyze({
+      mode: "text_estimate",
+      ocrText: "   ",
+      mealAdjustments: {
+        portionMultiplier: 1.4,
+      },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(modelCalls.length, 0);
+    assert.equal(response.body?.error, "Invalid text estimate payload");
+    assert.equal(response.body?.details, "ocrText is required for mode=text_estimate");
+  });
+
+  await runCase("9) text_estimate low confidence -> 422", async () => {
+    stubModelFetch({
+      responseText: JSON.stringify({
+        name: "Hampurilainen",
+        totalCalories: 780,
+        confidence: "low",
+        reasoning: "Not enough detail for a reliable calorie estimate",
+      }),
+    });
+
+    const response = await postAnalyze({
+      mode: "text_estimate",
+      ocrText: "Tuote: hampurilainen",
+      mealAdjustments: {
+        portionMultiplier: 1.4,
+      },
+    });
+
+    assert.equal(response.statusCode, 422);
+    assert.equal(modelCalls.length, 1);
+    assert.equal(response.body?.error, "Unable to estimate calories reliably");
   });
 });
 

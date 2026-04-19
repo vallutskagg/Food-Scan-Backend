@@ -1,6 +1,7 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
+import { randomUUID } from "node:crypto";
 dotenv.config();
 
 const app = express();
@@ -21,6 +22,7 @@ const GEMINI_GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v
 
 const ALLOWED_PORTION_MULTIPLIERS = new Set([0.5, 0.7, 1, 1.2, 1.4]);
 const ALLOWED_SERVING_CONTEXTS = new Set(["home", "restaurant", "readymeal"]);
+const ALLOWED_TEXT_ESTIMATE_CONFIDENCE = new Set(["low", "medium", "high"]);
 const MAX_MEAL_DESCRIPTION_LENGTH = 180;
 
 function isPlainObject(value) {
@@ -29,6 +31,11 @@ function isPlainObject(value) {
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function resolveAllowedPortionMultiplier(value) {
+  const candidate = Number(value);
+  return Number.isFinite(candidate) && ALLOWED_PORTION_MULTIPLIERS.has(candidate) ? candidate : 1;
 }
 
 function resolveImagePayload(body = {}) {
@@ -66,13 +73,7 @@ function normalizeMealContext(body = {}) {
 
   const adjustments = isPlainObject(mealAdjustments) ? mealAdjustments : {};
 
-  const portionMultiplierRaw = adjustments?.portionMultiplier;
-  const portionMultiplier =
-    typeof portionMultiplierRaw === "number" &&
-    Number.isFinite(portionMultiplierRaw) &&
-    ALLOWED_PORTION_MULTIPLIERS.has(portionMultiplierRaw)
-      ? portionMultiplierRaw
-      : 1;
+  const portionMultiplier = resolveAllowedPortionMultiplier(adjustments?.portionMultiplier);
 
   const oilAdded = typeof adjustments?.oilAdded === "boolean" ? adjustments.oilAdded : false;
 
@@ -104,6 +105,79 @@ function normalizeMealContext(body = {}) {
       ...(mealDescription ? { mealDescription } : {}),
     },
   };
+}
+
+function buildTextEstimatePrompt({ ocrText, portionMultiplier, mealDescription = "", instructions = "", data = {} }) {
+  const safeMealDescription = typeof mealDescription === "string" ? mealDescription.trim() : "";
+  const safeInstructions = typeof instructions === "string" ? instructions.trim() : "";
+  const safeData = isPlainObject(data) ? data : {};
+
+  return `Arvioi annoksen kalorit tekstin perusteella.
+Kayta annoskerrointa (portionMultiplier) skaalaamaan arviota.
+Palauta vain JSON:
+{
+  "name": string,
+  "totalCalories": number,
+  "confidence": "low" | "medium" | "high",
+  "reasoning": string
+}
+Saannot:
+- totalCalories on positiivinen kokonaisluku (>0)
+- jos arvio on liian epavarma, palauta confidence="low"
+- hyodynta OCR-teksti ensisijaisena lahteena
+
+portionMultiplier: ${portionMultiplier}
+mealDescription: ${JSON.stringify(safeMealDescription || "(ei annettu)")}
+instructions: ${JSON.stringify(safeInstructions || "(ei annettu)")}
+data: ${JSON.stringify(safeData, null, 2)}
+
+OCR-teksti:
+"""
+${ocrText}
+"""`;
+}
+
+function normalizeTextEstimateConfidence(value) {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().toLowerCase();
+  return ALLOWED_TEXT_ESTIMATE_CONFIDENCE.has(normalized) ? normalized : "";
+}
+
+function extractCaloriesFromKcalText(value) {
+  if (typeof value !== "string") return 0;
+  const match = value.match(/(\d+(?:[.,]\d+)?)\s*kcal\b/i);
+  if (!match) return 0;
+  const parsed = normalizeNumber(match[1], Number.NaN);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0;
+}
+
+function pickPositiveCalories(...candidates) {
+  for (const candidate of candidates) {
+    const parsed = normalizeNumber(candidate, Number.NaN);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.round(parsed);
+    }
+  }
+  return 0;
+}
+
+function pickFirstNonEmptyString(...candidates) {
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function resolveAnalyzeRequestId(req) {
+  const header = req.headers?.["x-request-id"];
+  if (typeof header === "string" && header.trim()) return header.trim();
+  if (Array.isArray(header)) {
+    const first = header.find((value) => typeof value === "string" && value.trim());
+    if (first) return first.trim();
+  }
+  return randomUUID();
 }
 
 function buildMealContextInstructionText(mealContext) {
@@ -894,12 +968,36 @@ ${JSON.stringify(data, null, 2)}`;
 
 /* ================= ANALYZE ENDPOINT ================= */
 app.post("/analyze", async (req, res) => {
+  const requestBody = req.body ?? {};
+  const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
+  const { imageBase64, mimeType } = resolveImagePayload(requestBody);
+  const normalizedOcrText = typeof ocrText === "string" ? ocrText.trim() : "";
+  const hasOcrText = normalizedOcrText.length > 0;
+  const portionMultiplier = resolveAllowedPortionMultiplier(requestBody?.mealAdjustments?.portionMultiplier);
+  const requestId = resolveAnalyzeRequestId(req);
+
+  const logAnalyzeOutcome = (status, payload = {}) => {
+    const error = typeof payload?.error === "string" ? payload.error : "";
+    const details = typeof payload?.details === "string" ? payload.details : "";
+    console.log("[analyze] result:", {
+      requestId,
+      mode: typeof mode === "string" ? mode : "",
+      hasOcrText,
+      portionMultiplier,
+      status,
+      ...(error ? { error } : {}),
+      ...(details ? { details } : {}),
+    });
+  };
+
+  const sendJson = (status, payload) => {
+    logAnalyzeOutcome(status, payload);
+    return res.status(status).json(payload);
+  };
+
+  const sendOk = (payload) => sendJson(200, payload);
+
   try {
-    const requestBody = req.body ?? {};
-    const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
-    const { imageBase64, mimeType } = resolveImagePayload(requestBody);
-    const normalizedOcrText = typeof ocrText === "string" ? ocrText.trim() : "";
-    const hasOcrText = normalizedOcrText.length > 0;
     const hasImageField =
       Object.prototype.hasOwnProperty.call(requestBody, "imageBase64") ||
       Object.prototype.hasOwnProperty.call(requestBody, "image") ||
@@ -909,7 +1007,7 @@ app.post("/analyze", async (req, res) => {
 
     if (mode === "weekly_report" || mode === "period_summary") {
       if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {
-        return res.status(400).json({
+        return sendJson(400, {
           error: `Virheellinen ${mode} pyyntö: instructions ja data vaaditaan.`,
         });
       }
@@ -940,24 +1038,113 @@ app.post("/analyze", async (req, res) => {
         const parsed = parseModelJson(rawText);
         const normalized =
           mode === "period_summary" ? normalizePeriodSummary(parsed) : normalizeWeeklyReport(parsed);
-        return res.status(200).json(normalized);
+        return sendOk(normalized);
       } catch (err) {
         console.error(`${mode} failed, using fallback:`, err?.message || err);
         const fallback =
           mode === "period_summary" ? buildPeriodSummaryFallback(req.body) : buildWeeklyReportFallback(req.body);
-        return res.status(200).json(fallback);
+        return sendOk(fallback);
       }
+    }
+
+    if (mode === "text_estimate") {
+      if (!hasOcrText) {
+        return sendJson(400, {
+          error: "Invalid text estimate payload",
+          details: "ocrText is required for mode=text_estimate",
+        });
+      }
+
+      const textEstimatePrompt = buildTextEstimatePrompt({
+        ocrText: normalizedOcrText,
+        portionMultiplier,
+        mealDescription: requestBody?.mealDescription,
+        instructions,
+        data: requestBody?.data,
+      });
+
+      const response = await fetch(
+        GEMINI_GENERATE_CONTENT_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-goog-api-key": API_KEY,
+          },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: textEstimatePrompt }] }],
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Text estimate failed");
+      }
+
+      const modelData = await response.json();
+      const rawText = modelData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+      let payload = null;
+      try {
+        payload = parseModelJson(rawText);
+      } catch {
+        payload = null;
+      }
+
+      const confidence = normalizeTextEstimateConfidence(payload?.confidence);
+      const detailsFromReasoning = pickFirstNonEmptyString(payload?.reasoning);
+
+      if (confidence === "low") {
+        return sendJson(422, {
+          error: "Unable to estimate calories reliably",
+          details: detailsFromReasoning || "Not enough detail for a reliable calorie estimate",
+        });
+      }
+
+      const totalCalories = pickPositiveCalories(
+        payload?.totalCalories,
+        payload?.calories,
+        payload?.products?.[0]?.calories,
+        extractCaloriesFromKcalText(payload?.result),
+        extractCaloriesFromKcalText(detailsFromReasoning),
+        extractCaloriesFromKcalText(rawText)
+      );
+
+      if (!(totalCalories > 0)) {
+        return sendJson(422, {
+          error: "Unable to estimate calories reliably",
+          details: "Not enough detail for a reliable calorie estimate",
+        });
+      }
+
+      const name = pickFirstNonEmptyString(payload?.name, payload?.foodName, requestBody?.data?.name, "Tuntematon annos");
+      const resultText = pickFirstNonEmptyString(payload?.result);
+
+      return sendOk({
+        name,
+        suggestedName: name,
+        totalCalories,
+        products: [
+          {
+            name,
+            calories: totalCalories,
+          },
+        ],
+        result: resultText && /\bkcal\b/i.test(resultText) ? resultText : `Arvioitu energiasisalto: ${totalCalories} kcal`,
+        confidence: confidence || "medium",
+      });
     }
 
     // AI-kuva-analyysi (AI-kameranappi)
     if (hasImageSignal) {
       if (!imageBase64 || typeof imageBase64 !== "string" || !imageBase64.trim()) {
-        return res.status(400).json({ error: "imageBase64 is required and must be a non-empty string" });
+        return sendJson(400, { error: "imageBase64 is required and must be a non-empty string" });
       }
 
       const mealContextResult = normalizeMealContext(requestBody);
       if (mealContextResult.error) {
-        return res.status(400).json({ error: mealContextResult.error });
+        return sendJson(400, { error: mealContextResult.error });
       }
 
       const mealContext = mealContextResult.mealContext;
@@ -980,7 +1167,7 @@ app.post("/analyze", async (req, res) => {
       const hasProfileForText = profile?.weight && profile?.height;
       const resultText = hasProfileForText ? buildProfileAwareText(adjusted, profile) : buildGenericText(adjusted);
 
-      return res.json({
+      return sendOk({
         // Käyttäjälle näytettävä analyysiteksti
         result: resultText,
 
@@ -1011,7 +1198,7 @@ app.post("/analyze", async (req, res) => {
 
     /* ================= OCR ANALYSIS ================= */
     if (!hasOcrText) {
-      return res.status(400).json({
+      return sendJson(400, {
         error: "OCR-teksti puuttuu",
         details: "Anna joko ocrText tai imageBase64 (myos data:image/...;base64,... kelpaa).",
       });
@@ -1231,7 +1418,7 @@ Yksi selkeä lause.
         typeof payload.processingReason === "string" ? payload.processingReason.trim() : "";
       const resultText = extractOcrResultText(payload, rawText, products);
 
-      return res.json({
+      return sendOk({
         result: resultText,
         products,
         totalCalories,
@@ -1257,14 +1444,14 @@ Yksi selkeä lause.
       }),
     ];
 
-    res.json({
+    return sendOk({
       result: extractOcrResultText(null, rawText, fallbackProducts),
       products: fallbackProducts,
       totalCalories: 0,
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({
+    return sendJson(500, {
       error: "Jokin meni pieleen",
       details: err?.message || "Tuntematon virhe",
     });
