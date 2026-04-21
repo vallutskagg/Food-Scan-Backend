@@ -1,21 +1,34 @@
-# Frontend guide: kuva-analyysi + Gemini 2.5
+# Frontend guide: kuva-analyysi ja OCR (Expo)
 
-Tama ohje auttaa varmistamaan, etta kuvanotto -> backend `/analyze` toimii luotettavasti, vaikka backendissa on vaihdettu malli Gemini 2.0 -> 2.5.
+Tama ohje kertoo milloin tarvitset `EXPO_PUBLIC_GOOGLE_VISION_API_KEY`-avaimen ja miten frontend kytketaan backendin `/analyze` endpointtiin.
 
-## 1) Mita backend odottaa frontendilta
+## 1) Kaksi toimivaa polkua
 
-Lahjeta `POST /analyze` JSON-rungolla, jossa on ainakin:
+### Polku A (suositus): laheta kuva backendiin
+
+Frontend lahettaa vain `imageBase64` ja backend tekee kuvan analyysin.
 
 ```json
 {
-  "imageBase64": "<base64 ilman tyhjaa>",
+  "imageBase64": "<base64>",
   "mealAdjustments": {
     "portionMultiplier": 1,
     "oilAdded": false,
     "servingContext": "home",
     "adjustmentPercent": 0
-  },
-  "mealDescription": "vapaa kuvaus",
+  }
+}
+```
+
+Tassa polussa `EXPO_PUBLIC_GOOGLE_VISION_API_KEY` ei ole pakollinen.
+
+### Polku B: tee OCR frontendissa Google Visionilla
+
+Frontend lukee tekstin Vision APIlla ja lahettaa backendille `ocrText`.
+
+```json
+{
+  "ocrText": "Energia 250 kcal / 100 g, Rasva 10 g, ...",
   "profile": {
     "weight": 80,
     "height": 180,
@@ -24,28 +37,66 @@ Lahjeta `POST /analyze` JSON-rungolla, jossa on ainakin:
 }
 ```
 
-Hyvaksytyt kuvat:
-- pelkka base64 merkkijono (`imageBase64`)
-- tai data-url (`data:image/jpeg;base64,...`)
+Tassa polussa `EXPO_PUBLIC_GOOGLE_VISION_API_KEY` on pakollinen.
 
-Backend palauttaa virheen 400 jos `imageBase64` on tyhja.
+## 2) Expo env-asetus (Vision OCR)
 
-## 2) Frontendin minimitarkistus ennen lahetysta
+Luo tai paivita frontend-projektin `.env`:
 
-Tarkista aina ennen fetchia:
-- `imageBase64` on `string`
-- `imageBase64.trim().length > 0`
-- et laheta pelkkaa `uri` kenttaa
-- header on `Content-Type: application/json`
+```env
+EXPO_PUBLIC_GOOGLE_VISION_API_KEY=your_real_vision_key
+```
 
-Suositus:
-- pakkaa kuvaa jo frontendissa (esim `quality: 0.5-0.7`)
-- kokoa rajataan niin, etta request pysyy alle backendin 25MB JSON-rajan
+Tarkista:
+- nimi on tasan `EXPO_PUBLIC_GOOGLE_VISION_API_KEY`
+- ei lainausmerkkeja arvon ymparilla
+- avain on oikeasti Vision APIlle sallittu
 
-## 3) Expo / React Native esimerkkipolku
+Muista kaynnistaa Metro uudelleen env-muutoksen jalkeen:
+
+```bash
+npx expo start -c
+```
+
+## 3) Frontend-esimerkki (Expo): kamera -> OCR -> backend
 
 ```ts
 import * as ImagePicker from "expo-image-picker";
+
+const VISION_KEY = process.env.EXPO_PUBLIC_GOOGLE_VISION_API_KEY;
+
+async function runVisionOcr(imageBase64: string) {
+  if (!VISION_KEY) {
+    throw new Error("EXPO_PUBLIC_GOOGLE_VISION_API_KEY puuttuu");
+  }
+
+  const response = await fetch(
+    `https://vision.googleapis.com/v1/images:annotate?key=${VISION_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [
+          {
+            image: { content: imageBase64 },
+            features: [{ type: "TEXT_DETECTION" }],
+          },
+        ],
+      }),
+    }
+  );
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Vision OCR failed (${response.status})`);
+  }
+
+  return (
+    data?.responses?.[0]?.fullTextAnnotation?.text ||
+    data?.responses?.[0]?.textAnnotations?.[0]?.description ||
+    ""
+  ).trim();
+}
 
 export async function analyzeMealPhoto(apiBaseUrl: string) {
   const pick = await ImagePicker.launchCameraAsync({
@@ -56,27 +107,31 @@ export async function analyzeMealPhoto(apiBaseUrl: string) {
 
   if (pick.canceled) return { canceled: true };
 
-  const asset = pick.assets?.[0];
-  const imageBase64 = asset?.base64?.trim() || "";
-  if (!imageBase64) {
-    throw new Error("Kuva puuttuu tai base64 muodostus epaonnistui.");
+  const imageBase64 = pick.assets?.[0]?.base64?.trim() || "";
+  if (!imageBase64) throw new Error("Kuva puuttuu tai base64 muodostus epaonnistui.");
+
+  let ocrText = "";
+  try {
+    ocrText = await runVisionOcr(imageBase64);
+  } catch {
+    // Fallback: jatketaan ilman frontend OCR:aa.
   }
 
-  const payload = {
-    imageBase64,
-    mealAdjustments: {
-      portionMultiplier: 1,
-      oilAdded: false,
-      servingContext: "home",
-      adjustmentPercent: 0,
-    },
-  };
+  const payload = ocrText
+    ? { ocrText }
+    : {
+        imageBase64,
+        mealAdjustments: {
+          portionMultiplier: 1,
+          oilAdded: false,
+          servingContext: "home",
+          adjustmentPercent: 0,
+        },
+      };
 
   const response = await fetch(`${apiBaseUrl}/analyze`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
@@ -89,34 +144,22 @@ export async function analyzeMealPhoto(apiBaseUrl: string) {
 }
 ```
 
-## 4) Gemini 2.0 -> 2.5 vaihto: mita frontendissa huomioida
+## 4) Miten tunnistat kummassa polussa olet
 
-Yleensa malli-vaihto ei vaadi frontendilta muutosta, koska frontend keskustelee backendin kanssa, ei suoraan Geminiin.
+- Jos virhe on `EXPO_PUBLIC_GOOGLE_VISION_API_KEY puuttuu`, frontend yrittää Polkua B.
+- Jos lahetat vain `imageBase64`, kaytossa on Polku A.
+- Jos lahetat `ocrText`, backend kasittelee OCR-tekstia suoraan.
 
-Mutta kaytannossa tarkista:
-- etta UI ei oleta liian tiukkaa tekstiformaattia `result`-kentassa
-- etta UI kayttaa ensisijaisesti `products` ja `totalCalories` kenttia
-- etta virheviestit naytetaan myos backendin `details`-kentasta
+## 5) Nopea debug-checklist
 
-Turvallinen lukutapa responseen:
-- `result` (teksti)
-- `products` (taulukko, voi olla fallbackilla geneerinen)
-- `totalCalories` (numero)
-- `suggestedName` (voi puuttua joissain fallbackeissa)
+1. Tulosta ennen lahetysta `Boolean(process.env.EXPO_PUBLIC_GOOGLE_VISION_API_KEY)`.
+2. Tulosta `imageBase64.length` (ei itse base64-dataa).
+3. Tulosta Vision-vastauksen virheviesti (`error.message`) jos OCR kaatuu.
+4. Tulosta backendin `error` ja `details` jos `/analyze` palauttaa virheen.
+5. Testaa ensin Polku A (vain `imageBase64`), sitten Polku B (`ocrText`).
 
-## 5) Nopea debug-checklist (kun analyysi epaonnistuu)
+## 6) Turvallisuus tuotantoon
 
-1. Tulosta frontendissa ennen lahetysta: `imageBase64.length`.
-2. Tulosta backendin vastausbody aina virheessa.
-3. Varmista ettei frontend trimmaa/katkaise base64 stringia vahingossa.
-4. Testaa samalla payloadilla Postmanista tai curlilla.
-5. Jos saat 500, tarkista backend-loki: `Gemini image analyze API error`.
-
-## 6) Suositus tuotantoon
-
-- Lisaa frontendiin retry (1-2 yritysta) vain 5xx virheille.
-- Aseta timeout (esim 20-30s) ja nayta kayttajalle "Yritetaan uudelleen".
-- Loggaa analyysivirheesta ainakin:
-  - HTTP status
-  - backend `error` + `details`
-  - imageBase64 pituus (ei itse dataa)
+- `EXPO_PUBLIC_*` muuttujat ovat asiakaspuolella luettavissa.
+- Rajaa Vision-avain Google Cloudissa mahdollisimman tiukasti.
+- Jos haluat pitaa avaimen kokonaan piilossa, tee OCR backendissa etka frontendissa.
