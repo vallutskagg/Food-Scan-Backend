@@ -107,13 +107,20 @@ function normalizeMealContext(body = {}) {
   };
 }
 
-function buildTextEstimatePrompt({ ocrText, portionMultiplier, mealDescription = "", instructions = "", data = {} }) {
+function buildTextEstimatePrompt({
+  ocrText,
+  targetPortionMultiplier = 1,
+  mealDescription = "",
+  instructions = "",
+  data = {},
+}) {
   const safeMealDescription = typeof mealDescription === "string" ? mealDescription.trim() : "";
   const safeInstructions = typeof instructions === "string" ? instructions.trim() : "";
   const safeData = isPlainObject(data) ? data : {};
 
   return `Arvioi annoksen kalorit tekstin perusteella.
-Kayta annoskerrointa (portionMultiplier) skaalaamaan arviota.
+Palauta normiannoksen (1.0x) kalorit.
+Huomioi kayttajan lisatiedot, mutta ala skaalaa arviota targetPortionMultiplierilla.
 Palauta vain JSON:
 {
   "name": string,
@@ -126,7 +133,7 @@ Saannot:
 - jos arvio on liian epavarma, palauta confidence="low"
 - hyodynta OCR-teksti ensisijaisena lahteena
 
-portionMultiplier: ${portionMultiplier}
+targetPortionMultiplier: ${targetPortionMultiplier}
 mealDescription: ${JSON.stringify(safeMealDescription || "(ei annettu)")}
 instructions: ${JSON.stringify(safeInstructions || "(ei annettu)")}
 data: ${JSON.stringify(safeData, null, 2)}
@@ -298,6 +305,77 @@ async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg
         ? parsed.healthClass.trim()
         : "\u{1F7E1}",
   };
+}
+
+function buildOcrFromImageRequestPayload({ imageBase64, mimeType = "image/jpeg" }) {
+  const prompt = `Lue kuvasta kaikki luettavissa oleva teksti mahdollisimman tarkasti.
+Palauta VAIN JSON:
+{
+  "ocrText": "..."
+}
+Saannot:
+- ocrText sisaltaa vain kuvasta luettua tekstia.
+- jos teksti ei ole luettavissa luotettavasti, palauta tyhja merkkijono ("").`;
+
+  return {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType,
+              data: imageBase64,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function extractOcrTextFromImage({ imageBase64, mimeType = "image/jpeg" }) {
+  const response = await fetch(
+    GEMINI_GENERATE_CONTENT_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-goog-api-key": API_KEY,
+      },
+      body: JSON.stringify(buildOcrFromImageRequestPayload({ imageBase64, mimeType })),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || "OCR image extraction failed");
+  }
+
+  const modelData = await response.json();
+  const rawText = modelData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+  let parsed = null;
+  try {
+    parsed = parseModelJson(rawText);
+  } catch {
+    parsed = null;
+  }
+
+  const parsedOcrText = pickFirstNonEmptyString(parsed?.ocrText, parsed?.text, parsed?.result, parsed?.content);
+  if (parsedOcrText) return parsedOcrText;
+
+  const cleanedRawText = String(rawText || "")
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  if (!cleanedRawText || (cleanedRawText.startsWith("{") && cleanedRawText.endsWith("}"))) {
+    return "";
+  }
+
+  return cleanedRawText;
 }
 
 // Ylläpitokaloritarve (BMR + aktiivisuus)
@@ -970,7 +1048,12 @@ ${JSON.stringify(data, null, 2)}`;
 app.post("/analyze", async (req, res) => {
   const requestBody = req.body ?? {};
   const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
+  const modeNormalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+  const sourceRoute = typeof requestBody?.sourceRoute === "string" ? requestBody.sourceRoute.trim() : "";
+  const ocrFallbackReason =
+    typeof requestBody?.ocrFallbackReason === "string" ? requestBody.ocrFallbackReason.trim() : "";
   const { imageBase64, mimeType } = resolveImagePayload(requestBody);
+  const hasImageBase64 = Boolean(imageBase64);
   const normalizedOcrText = typeof ocrText === "string" ? ocrText.trim() : "";
   const hasOcrText = normalizedOcrText.length > 0;
   const portionMultiplier = resolveAllowedPortionMultiplier(requestBody?.mealAdjustments?.portionMultiplier);
@@ -982,7 +1065,10 @@ app.post("/analyze", async (req, res) => {
     console.log("[analyze] result:", {
       requestId,
       mode: typeof mode === "string" ? mode : "",
+      sourceRoute,
       hasOcrText,
+      hasImageBase64,
+      ...(ocrFallbackReason ? { ocrFallbackReason } : {}),
       portionMultiplier,
       status,
       ...(error ? { error } : {}),
@@ -1003,16 +1089,16 @@ app.post("/analyze", async (req, res) => {
       Object.prototype.hasOwnProperty.call(requestBody, "image") ||
       Object.prototype.hasOwnProperty.call(requestBody, "base64Image") ||
       Object.prototype.hasOwnProperty.call(requestBody, "photoBase64");
-    const hasImageSignal = Boolean(imageBase64) || (hasImageField && !hasOcrText);
+    const hasImageSignal = hasImageBase64 || (hasImageField && !hasOcrText);
 
-    if (mode === "weekly_report" || mode === "period_summary") {
+    if (modeNormalized === "weekly_report" || modeNormalized === "period_summary") {
       if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {
         return sendJson(400, {
-          error: `Virheellinen ${mode} pyyntö: instructions ja data vaaditaan.`,
+          error: `Virheellinen ${modeNormalized} pyyntö: instructions ja data vaaditaan.`,
         });
       }
 
-      const reportPrompt = buildReportPrompt(mode, instructions, reportData);
+      const reportPrompt = buildReportPrompt(modeNormalized, instructions, reportData);
 
       try {
         const response = await fetch(
@@ -1037,17 +1123,17 @@ app.post("/analyze", async (req, res) => {
         const rawText = aiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
         const parsed = parseModelJson(rawText);
         const normalized =
-          mode === "period_summary" ? normalizePeriodSummary(parsed) : normalizeWeeklyReport(parsed);
+          modeNormalized === "period_summary" ? normalizePeriodSummary(parsed) : normalizeWeeklyReport(parsed);
         return sendOk(normalized);
       } catch (err) {
-        console.error(`${mode} failed, using fallback:`, err?.message || err);
+        console.error(`${modeNormalized} failed, using fallback:`, err?.message || err);
         const fallback =
-          mode === "period_summary" ? buildPeriodSummaryFallback(req.body) : buildWeeklyReportFallback(req.body);
+          modeNormalized === "period_summary" ? buildPeriodSummaryFallback(req.body) : buildWeeklyReportFallback(req.body);
         return sendOk(fallback);
       }
     }
 
-    if (mode === "text_estimate") {
+    if (modeNormalized === "text_estimate") {
       if (!hasOcrText) {
         return sendJson(400, {
           error: "Invalid text estimate payload",
@@ -1055,9 +1141,10 @@ app.post("/analyze", async (req, res) => {
         });
       }
 
+      const targetPortionMultiplier = resolveAllowedPortionMultiplier(requestBody?.data?.targetPortionMultiplier);
       const textEstimatePrompt = buildTextEstimatePrompt({
         ocrText: normalizedOcrText,
-        portionMultiplier,
+        targetPortionMultiplier,
         mealDescription: requestBody?.mealDescription,
         instructions,
         data: requestBody?.data,
@@ -1136,8 +1223,31 @@ app.post("/analyze", async (req, res) => {
       });
     }
 
+    let ocrTextForAnalysis = normalizedOcrText;
+    if (modeNormalized === "ocr") {
+      if (!ocrTextForAnalysis && !hasImageBase64) {
+        return sendJson(400, {
+          error: "Invalid OCR payload",
+          details: "Either ocrText or imageBase64 is required for mode=ocr",
+        });
+      }
+
+      if (!ocrTextForAnalysis && hasImageBase64) {
+        ocrTextForAnalysis = (await extractOcrTextFromImage({ imageBase64, mimeType })).trim();
+      }
+
+      if (!ocrTextForAnalysis) {
+        return sendJson(422, {
+          error: "OCR analysis failed",
+          details: "No readable text from image/text payload",
+        });
+      }
+    }
+
+    const shouldRunOcrAnalysis = modeNormalized === "ocr" || Boolean(ocrTextForAnalysis);
+
     // AI-kuva-analyysi (AI-kameranappi)
-    if (hasImageSignal) {
+    if (!shouldRunOcrAnalysis && hasImageSignal) {
       if (!imageBase64 || typeof imageBase64 !== "string" || !imageBase64.trim()) {
         return sendJson(400, { error: "imageBase64 is required and must be a non-empty string" });
       }
@@ -1197,7 +1307,7 @@ app.post("/analyze", async (req, res) => {
     }
 
     /* ================= OCR ANALYSIS ================= */
-    if (!hasOcrText) {
+    if (!shouldRunOcrAnalysis) {
       return sendJson(400, {
         error: "OCR-teksti puuttuu",
         details: "Anna joko ocrText tai imageBase64 (myos data:image/...;base64,... kelpaa).",
@@ -1286,7 +1396,7 @@ ${profile.timeframe ? `- Aikajänne: ${profile.timeframe} kuukautta` : ""}
 
 TUOTTEEN OCR-TEKSTI:
 """
-${normalizedOcrText}
+${ocrTextForAnalysis}
 """
 
 KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
@@ -1318,7 +1428,7 @@ Kirjoita lyhyesti ja konkreettisesti, mitä käyttäjä voi vaihtaa mihin.
 
 TUOTTEEN OCR-TEKSTI:
 """
-${normalizedOcrText}
+${ocrTextForAnalysis}
 """
 
 KÄYTTÄJÄLLE NÄYTETTÄVÄ TEKSTI ("result"):
@@ -1401,6 +1511,13 @@ Yksi selkeä lause.
         ? Math.max(0, normalizeNumber(payload.totalCalories))
         : products.reduce((sum, p) => sum + (p.calories || 0), 0);
 
+      if (modeNormalized === "ocr" && !(totalCalories > 0)) {
+        return sendJson(422, {
+          error: "OCR analysis failed",
+          details: "No readable text from image/text payload",
+        });
+      }
+
       let suggestedName = "";
       if (products.length === 1) {
         suggestedName = products[0].name || "";
@@ -1443,6 +1560,13 @@ Yksi selkeä lause.
         fat: 0,
       }),
     ];
+
+    if (modeNormalized === "ocr") {
+      return sendJson(422, {
+        error: "OCR analysis failed",
+        details: "No readable text from image/text payload",
+      });
+    }
 
     return sendOk({
       result: extractOcrResultText(null, rawText, fallbackProducts),

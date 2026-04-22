@@ -35,13 +35,16 @@ function buildMockModelResponse(responseText = DEFAULT_MODEL_TEXT) {
   };
 }
 
-function stubModelFetch({ responseText = DEFAULT_MODEL_TEXT } = {}) {
+function stubModelFetch({ responseText = DEFAULT_MODEL_TEXT, responseTexts = null } = {}) {
   modelCalls = [];
+  const queue = Array.isArray(responseTexts) && responseTexts.length ? [...responseTexts] : [responseText];
+  const fallbackResponseText = queue[queue.length - 1] ?? responseText;
   globalThis.fetch = async (url, options = {}) => {
+    const nextResponseText = queue.length ? queue.shift() : fallbackResponseText;
     modelCalls.push({ url, options });
     return {
       ok: true,
-      json: async () => buildMockModelResponse(responseText),
+      json: async () => buildMockModelResponse(nextResponseText),
       text: async () => "",
     };
   };
@@ -205,6 +208,8 @@ await withServer(async () => {
     stubModelFetch();
 
     const response = await postAnalyze({
+      mode: "ocr",
+      sourceRoute: "ocr_capture",
       ocrText: "Energia 220 kcal / 100 g, Hiilihydraatit 20 g, joista sokereita 5 g",
       mealAdjustments: {
         portionMultiplier: 1.2,
@@ -257,12 +262,13 @@ await withServer(async () => {
       mode: "text_estimate",
       ocrText: "Tuote: hampurilainen",
       mealAdjustments: {
-        portionMultiplier: 1.4,
+        portionMultiplier: 1,
       },
       imageBase64:
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2NgYGD4DwABBAEAe2fWJwAAAABJRU5ErkJggg==",
       data: {
         name: "hampurilainen",
+        targetPortionMultiplier: 1.4,
       },
     });
 
@@ -278,7 +284,9 @@ await withServer(async () => {
     const imagePart = parts.find((part) => part.inlineData);
 
     assert.equal(Boolean(imagePart), false);
-    assert.match(textPart, /portionMultiplier: 1\.4/);
+    assert.match(textPart, /targetPortionMultiplier: 1\.4/);
+    assert.match(textPart, /normiannoksen \(1\.0x\) kalorit/i);
+    assert.doesNotMatch(textPart, /Kayta annoskerrointa/i);
   });
 
   await runCase("8) text_estimate ilman ocrText -> 400", async () => {
@@ -319,6 +327,96 @@ await withServer(async () => {
     assert.equal(response.statusCode, 422);
     assert.equal(modelCalls.length, 1);
     assert.equal(response.body?.error, "Unable to estimate calories reliably");
+  });
+
+  await runCase("10) mode=ocr + image fallback -> pysyy OCR-polussa", async () => {
+    stubModelFetch({
+      responseTexts: [
+        JSON.stringify({
+          ocrText: "Energia 180 kcal / 100 g, Hiilihydraatit 15 g, joista sokereita 4 g",
+        }),
+        JSON.stringify({
+          result: "OCR analyysi valmis",
+          products: [
+            {
+              name: "Testituote",
+              calories: 180,
+              protein: 6,
+              carbs: 15,
+              sugar: 4,
+              fat: 8,
+            },
+          ],
+          totalCalories: 180,
+        }),
+      ],
+    });
+
+    const response = await postAnalyze({
+      mode: "ocr",
+      sourceRoute: "ocr_capture",
+      imageBase64: "dGVzdGltYWdl",
+      ocrFallbackReason: "vision_empty_text",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 2);
+    assert.equal(response.body?.totalCalories, 180);
+
+    const firstCallPayload = JSON.parse(modelCalls[0].options.body);
+    const firstParts = firstCallPayload?.contents?.[0]?.parts || [];
+    const firstTextPart = firstParts.find((part) => typeof part.text === "string")?.text || "";
+    const firstImagePart = firstParts.find((part) => part.inlineData)?.inlineData;
+    assert.match(firstTextPart, /Lue kuvasta kaikki luettavissa oleva teksti/);
+    assert.equal(firstImagePart?.data, "dGVzdGltYWdl");
+
+    const secondCallPayload = JSON.parse(modelCalls[1].options.body);
+    const secondParts = secondCallPayload?.contents?.[0]?.parts || [];
+    const secondTextPart = secondParts.find((part) => typeof part.text === "string")?.text || "";
+    const secondImagePart = secondParts.find((part) => part.inlineData);
+    assert.equal(Boolean(secondImagePart), false);
+    assert.match(
+      secondTextPart,
+      /ANALYYSIMENETELMÄ: OCR-TEKSTI|ANALYYSIMENETELMÃ„: OCR-TEKSTI|ANALYYSIMENETELMA: OCR-TEKSTI/
+    );
+    assert.match(secondTextPart, /Energia 180 kcal/);
+  });
+
+  await runCase("11) mode=ocr ilman ocrText ja imageBase64 -> 400", async () => {
+    stubModelFetch();
+
+    const response = await postAnalyze({
+      mode: "ocr",
+      sourceRoute: "ocr_capture",
+      ocrText: "   ",
+      imageBase64: "   ",
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(modelCalls.length, 0);
+    assert.equal(response.body?.error, "Invalid OCR payload");
+  });
+
+  await runCase("12) mode=ocr heikko OCR-data -> 422", async () => {
+    stubModelFetch({
+      responseTexts: [
+        JSON.stringify({
+          ocrText: "",
+        }),
+      ],
+    });
+
+    const response = await postAnalyze({
+      mode: "ocr",
+      sourceRoute: "ocr_capture",
+      imageBase64: "dGVzdGltYWdl",
+      ocrFallbackReason: "vision_empty_text",
+    });
+
+    assert.equal(response.statusCode, 422);
+    assert.equal(modelCalls.length, 1);
+    assert.equal(response.body?.error, "OCR analysis failed");
+    assert.equal(response.body?.details, "No readable text from image/text payload");
   });
 });
 
