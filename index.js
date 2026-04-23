@@ -177,6 +177,83 @@ function pickFirstNonEmptyString(...candidates) {
   return "";
 }
 
+function extractModelText(modelData) {
+  const parts = Array.isArray(modelData?.candidates?.[0]?.content?.parts) ? modelData.candidates[0].content.parts : [];
+  const text = parts
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return text;
+}
+
+function collectNestedStringValues(value, bucket, depth = 0) {
+  if (depth > 5 || bucket.length >= 120) return;
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) bucket.push(trimmed);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectNestedStringValues(item, bucket, depth + 1);
+    }
+    return;
+  }
+
+  if (isPlainObject(value)) {
+    for (const nested of Object.values(value)) {
+      collectNestedStringValues(nested, bucket, depth + 1);
+    }
+  }
+}
+
+function extractOcrTextFromParsedPayload(parsed) {
+  if (!isPlainObject(parsed)) return "";
+
+  const direct = pickFirstNonEmptyString(
+    parsed?.ocrText,
+    parsed?.ocr_text,
+    parsed?.fullText,
+    parsed?.full_text,
+    parsed?.extractedText,
+    parsed?.extracted_text,
+    parsed?.text,
+    parsed?.result,
+    parsed?.content,
+    parsed?.description
+  );
+  if (direct) return direct;
+
+  const nestedStrings = [];
+  collectNestedStringValues(parsed, nestedStrings);
+  const likely = nestedStrings
+    .filter((value) => /[A-Za-z0-9]/.test(value))
+    .sort((a, b) => b.length - a.length)[0];
+
+  return likely || "";
+}
+
+function resolveTextEstimateInputText(body = {}, ocrText = "") {
+  const normalizedOcrText = typeof ocrText === "string" ? ocrText.trim() : "";
+  if (normalizedOcrText) return normalizedOcrText;
+
+  const data = isPlainObject(body?.data) ? body.data : {};
+  const fallbackChunks = [
+    typeof data?.details === "string" ? data.details : "",
+    typeof data?.description === "string" ? data.description : "",
+    typeof body?.mealDescription === "string" ? body.mealDescription : "",
+    typeof body?.instructions === "string" ? body.instructions : "",
+    typeof data?.name === "string" && data.name.trim() ? `Tuote: ${data.name.trim()}` : "",
+  ]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+
+  return fallbackChunks.join("\n");
+}
+
 function resolveAnalyzeRequestId(req) {
   const header = req.headers?.["x-request-id"];
   if (typeof header === "string" && header.trim()) return header.trim();
@@ -279,7 +356,7 @@ async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg
   }
 
   const data = await response.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const rawText = extractModelText(data);
   const parsed = parseModelJson(rawText);
   const macros = sanitizeMacros(
     {
@@ -354,7 +431,7 @@ async function extractOcrTextFromImage({ imageBase64, mimeType = "image/jpeg" })
   }
 
   const modelData = await response.json();
-  const rawText = modelData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const rawText = extractModelText(modelData);
 
   let parsed = null;
   try {
@@ -363,7 +440,7 @@ async function extractOcrTextFromImage({ imageBase64, mimeType = "image/jpeg" })
     parsed = null;
   }
 
-  const parsedOcrText = pickFirstNonEmptyString(parsed?.ocrText, parsed?.text, parsed?.result, parsed?.content);
+  const parsedOcrText = extractOcrTextFromParsedPayload(parsed);
   if (parsedOcrText) return parsedOcrText;
 
   const cleanedRawText = String(rawText || "")
@@ -371,7 +448,22 @@ async function extractOcrTextFromImage({ imageBase64, mimeType = "image/jpeg" })
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/, "")
     .trim();
-  if (!cleanedRawText || (cleanedRawText.startsWith("{") && cleanedRawText.endsWith("}"))) {
+
+  if (!cleanedRawText) {
+    return "";
+  }
+
+  if (cleanedRawText.startsWith("{") && cleanedRawText.endsWith("}")) {
+    let parsedRawText = null;
+    try {
+      parsedRawText = JSON.parse(cleanedRawText);
+    } catch {
+      parsedRawText = null;
+    }
+
+    const extractedFromRawJson = extractOcrTextFromParsedPayload(parsedRawText);
+    if (extractedFromRawJson) return extractedFromRawJson;
+
     return "";
   }
 
@@ -1056,6 +1148,8 @@ app.post("/analyze", async (req, res) => {
   const hasImageBase64 = Boolean(imageBase64);
   const normalizedOcrText = typeof ocrText === "string" ? ocrText.trim() : "";
   const hasOcrText = normalizedOcrText.length > 0;
+  const textEstimateInputText = resolveTextEstimateInputText(requestBody, normalizedOcrText);
+  const hasTextEstimateInputText = textEstimateInputText.length > 0;
   const portionMultiplier = resolveAllowedPortionMultiplier(requestBody?.mealAdjustments?.portionMultiplier);
   const requestId = resolveAnalyzeRequestId(req);
 
@@ -1067,6 +1161,7 @@ app.post("/analyze", async (req, res) => {
       mode: typeof mode === "string" ? mode : "",
       sourceRoute,
       hasOcrText,
+      ...(modeNormalized === "text_estimate" ? { hasTextEstimateInputText } : {}),
       hasImageBase64,
       ...(ocrFallbackReason ? { ocrFallbackReason } : {}),
       portionMultiplier,
@@ -1120,7 +1215,7 @@ app.post("/analyze", async (req, res) => {
         }
 
         const aiData = await response.json();
-        const rawText = aiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+        const rawText = extractModelText(aiData);
         const parsed = parseModelJson(rawText);
         const normalized =
           modeNormalized === "period_summary" ? normalizePeriodSummary(parsed) : normalizeWeeklyReport(parsed);
@@ -1134,7 +1229,7 @@ app.post("/analyze", async (req, res) => {
     }
 
     if (modeNormalized === "text_estimate") {
-      if (!hasOcrText) {
+      if (!hasTextEstimateInputText) {
         return sendJson(400, {
           error: "Invalid text estimate payload",
           details: "ocrText is required for mode=text_estimate",
@@ -1143,7 +1238,7 @@ app.post("/analyze", async (req, res) => {
 
       const targetPortionMultiplier = resolveAllowedPortionMultiplier(requestBody?.data?.targetPortionMultiplier);
       const textEstimatePrompt = buildTextEstimatePrompt({
-        ocrText: normalizedOcrText,
+        ocrText: textEstimateInputText,
         targetPortionMultiplier,
         mealDescription: requestBody?.mealDescription,
         instructions,
@@ -1170,7 +1265,7 @@ app.post("/analyze", async (req, res) => {
       }
 
       const modelData = await response.json();
-      const rawText = modelData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      const rawText = extractModelText(modelData);
 
       let payload = null;
       try {
@@ -1469,7 +1564,7 @@ Yksi selkeä lause.
     }
 
     const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const rawText = extractModelText(data);
 
     let cleanedText = rawText.trim();
     if (cleanedText.startsWith("```json")) {

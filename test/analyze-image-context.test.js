@@ -289,6 +289,39 @@ await withServer(async () => {
     assert.doesNotMatch(textPart, /Kayta annoskerrointa/i);
   });
 
+  await runCase("7b) text_estimate toimii fallback-tekstilla vaikka ocrText puuttuu", async () => {
+    stubModelFetch({
+      responseText: JSON.stringify({
+        name: "Kana-riisi",
+        totalCalories: 650,
+        confidence: "medium",
+      }),
+    });
+
+    const response = await postAnalyze({
+      mode: "text_estimate",
+      mealDescription: "Kana, riisi ja kevyt kastike",
+      instructions: "Arvioi normiannos.",
+      data: {
+        name: "Kana-riisi",
+        details: "Kotitekoinen annos, noin 350 g",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 1);
+    assert.equal(response.body?.totalCalories, 650);
+
+    const callPayload = JSON.parse(modelCalls[0].options.body);
+    const parts = callPayload?.contents?.[0]?.parts || [];
+    const textPart = parts.find((part) => typeof part.text === "string")?.text || "";
+    const imagePart = parts.find((part) => part.inlineData);
+
+    assert.equal(Boolean(imagePart), false);
+    assert.match(textPart, /Kana, riisi ja kevyt kastike/);
+    assert.match(textPart, /Kotitekoinen annos/);
+  });
+
   await runCase("8) text_estimate ilman ocrText -> 400", async () => {
     stubModelFetch();
 
@@ -380,6 +413,47 @@ await withServer(async () => {
       /ANALYYSIMENETELMÄ: OCR-TEKSTI|ANALYYSIMENETELMÃ„: OCR-TEKSTI|ANALYYSIMENETELMA: OCR-TEKSTI/
     );
     assert.match(secondTextPart, /Energia 180 kcal/);
+  });
+
+  await runCase("10b) mode=ocr lukee OCR-tekstin vaikka avain on ocr_text", async () => {
+    stubModelFetch({
+      responseTexts: [
+        JSON.stringify({
+          ocr_text: "Energia 210 kcal / 100 g, Hiilihydraatit 22 g, joista sokereita 6 g",
+        }),
+        JSON.stringify({
+          result: "OCR analyysi valmis",
+          products: [
+            {
+              name: "Testituote 2",
+              calories: 210,
+              protein: 7,
+              carbs: 22,
+              sugar: 6,
+              fat: 9,
+            },
+          ],
+          totalCalories: 210,
+        }),
+      ],
+    });
+
+    const response = await postAnalyze({
+      mode: "ocr",
+      sourceRoute: "ocr_capture",
+      imageBase64: "dGVzdGltYWdl",
+      ocrFallbackReason: "vision_empty_text",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 2);
+    assert.equal(response.body?.totalCalories, 210);
+
+    const secondCallPayload = JSON.parse(modelCalls[1].options.body);
+    const secondParts = secondCallPayload?.contents?.[0]?.parts || [];
+    const secondTextPart = secondParts.find((part) => typeof part.text === "string")?.text || "";
+
+    assert.match(secondTextPart, /Energia 210 kcal/);
   });
 
   await runCase("11) mode=ocr ilman ocrText ja imageBase64 -> 400", async () => {
