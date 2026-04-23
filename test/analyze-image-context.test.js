@@ -456,6 +456,47 @@ await withServer(async () => {
     assert.match(secondTextPart, /Energia 210 kcal/);
   });
 
+  await runCase("10c) sourceRoute=ocr_capture ilman modea pysyy OCR-polussa", async () => {
+    stubModelFetch({
+      responseTexts: [
+        JSON.stringify({
+          ocrText: "Energia 190 kcal / 100 g, Hiilihydraatit 18 g, joista sokereita 3 g",
+        }),
+        JSON.stringify({
+          result: "OCR analyysi valmis",
+          products: [
+            {
+              name: "Testituote 3",
+              calories: 190,
+              protein: 6,
+              carbs: 18,
+              sugar: 3,
+              fat: 7,
+            },
+          ],
+          totalCalories: 190,
+        }),
+      ],
+    });
+
+    const response = await postAnalyze({
+      sourceRoute: "ocr_capture",
+      imageBase64: "dGVzdGltYWdl",
+      ocrFallbackReason: "vision_empty_text",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(modelCalls.length, 2);
+    assert.equal(response.body?.totalCalories, 190);
+
+    const firstCallPayload = JSON.parse(modelCalls[0].options.body);
+    const firstParts = firstCallPayload?.contents?.[0]?.parts || [];
+    const firstTextPart = firstParts.find((part) => typeof part.text === "string")?.text || "";
+    const firstImagePart = firstParts.find((part) => part.inlineData)?.inlineData;
+    assert.match(firstTextPart, /Lue kuvasta kaikki luettavissa oleva teksti/);
+    assert.equal(firstImagePart?.data, "dGVzdGltYWdl");
+  });
+
   await runCase("11) mode=ocr ilman ocrText ja imageBase64 -> 400", async () => {
     stubModelFetch();
 

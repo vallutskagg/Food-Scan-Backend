@@ -1142,6 +1142,12 @@ app.post("/analyze", async (req, res) => {
   const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
   const modeNormalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
   const sourceRoute = typeof requestBody?.sourceRoute === "string" ? requestBody.sourceRoute.trim() : "";
+  const sourceRouteNormalized = sourceRoute.toLowerCase();
+  const isOcrRouteSignal =
+    sourceRouteNormalized === "ocr_capture" ||
+    sourceRouteNormalized === "ocr" ||
+    sourceRouteNormalized === "ocr_scan";
+  const isOcrMode = modeNormalized === "ocr" || (!modeNormalized && isOcrRouteSignal);
   const ocrFallbackReason =
     typeof requestBody?.ocrFallbackReason === "string" ? requestBody.ocrFallbackReason.trim() : "";
   const { imageBase64, mimeType } = resolveImagePayload(requestBody);
@@ -1159,6 +1165,7 @@ app.post("/analyze", async (req, res) => {
     console.log("[analyze] result:", {
       requestId,
       mode: typeof mode === "string" ? mode : "",
+      effectiveMode: isOcrMode ? "ocr" : modeNormalized || "",
       sourceRoute,
       hasOcrText,
       ...(modeNormalized === "text_estimate" ? { hasTextEstimateInputText } : {}),
@@ -1319,7 +1326,7 @@ app.post("/analyze", async (req, res) => {
     }
 
     let ocrTextForAnalysis = normalizedOcrText;
-    if (modeNormalized === "ocr") {
+    if (isOcrMode) {
       if (!ocrTextForAnalysis && !hasImageBase64) {
         return sendJson(400, {
           error: "Invalid OCR payload",
@@ -1339,7 +1346,7 @@ app.post("/analyze", async (req, res) => {
       }
     }
 
-    const shouldRunOcrAnalysis = modeNormalized === "ocr" || Boolean(ocrTextForAnalysis);
+    const shouldRunOcrAnalysis = isOcrMode || Boolean(ocrTextForAnalysis);
 
     // AI-kuva-analyysi (AI-kameranappi)
     if (!shouldRunOcrAnalysis && hasImageSignal) {
@@ -1606,7 +1613,7 @@ Yksi selkeä lause.
         ? Math.max(0, normalizeNumber(payload.totalCalories))
         : products.reduce((sum, p) => sum + (p.calories || 0), 0);
 
-      if (modeNormalized === "ocr" && !(totalCalories > 0)) {
+      if (isOcrMode && !(totalCalories > 0)) {
         return sendJson(422, {
           error: "OCR analysis failed",
           details: "No readable text from image/text payload",
@@ -1656,7 +1663,7 @@ Yksi selkeä lause.
       }),
     ];
 
-    if (modeNormalized === "ocr") {
+    if (isOcrMode) {
       return sendJson(422, {
         error: "OCR analysis failed",
         details: "No readable text from image/text payload",
