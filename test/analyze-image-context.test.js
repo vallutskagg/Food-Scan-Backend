@@ -151,7 +151,13 @@ await withServer(async () => {
     assert.match(textPart, /servingContext: restaurant/);
     assert.match(textPart, /adjustmentPercent: 10/);
     assert.match(textPart, /mealDescription: "ensisijainen kuvaus"/);
+    assert.match(textPart, /"baseCalories": 210/);
     assert.doesNotMatch(textPart, /varakentta kuvaus/);
+    assert.equal(response.body?.products?.[0]?.baseCalories, 620);
+    assert.equal(response.body?.products?.[0]?.baseProtein, 38);
+    assert.equal(response.body?.products?.[0]?.baseCarbs, 62);
+    assert.equal(response.body?.products?.[0]?.baseSugar, 4);
+    assert.equal(response.body?.products?.[0]?.baseFat, 19);
   });
 
   await runCase("2) Kuva ilman mealAdjustments -> kaytetaan oletuksia", async () => {
@@ -227,6 +233,8 @@ await withServer(async () => {
 
     assert.equal(Boolean(imagePart), false);
     assert.match(textPart, /ANALYYSIMENETELMÄ: OCR-TEKSTI|ANALYYSIMENETELMA: OCR-TEKSTI/);
+    assert.match(textPart, /Ala koskaan skaalaa arvoja kulutetun maaran/i);
+    assert.doesNotMatch(textPart, /skaalaa per 100g\/100ml arvot siihen maaraan/i);
   });
   await runCase("6) OCR toimii vaikka imageBase64 on tyhja", async () => {
     stubModelFetch();
@@ -495,6 +503,22 @@ await withServer(async () => {
     const firstImagePart = firstParts.find((part) => part.inlineData)?.inlineData;
     assert.match(firstTextPart, /Lue kuvasta kaikki luettavissa oleva teksti/);
     assert.equal(firstImagePart?.data, "dGVzdGltYWdl");
+  });
+
+  await runCase("10d) mode=ocr + ocrProvider!=gemini -> 400", async () => {
+    stubModelFetch();
+
+    const response = await postAnalyze({
+      mode: "ocr",
+      sourceRoute: "ocr_capture",
+      ocrProvider: "vision",
+      imageBase64: "dGVzdGltYWdl",
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(modelCalls.length, 0);
+    assert.equal(response.body?.error, "Unsupported OCR provider");
+    assert.match(response.body?.details || "", /Only "gemini" is supported/i);
   });
 
   await runCase("11) mode=ocr ilman ocrText ja imageBase64 -> 400", async () => {

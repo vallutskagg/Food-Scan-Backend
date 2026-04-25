@@ -24,6 +24,7 @@ const ALLOWED_PORTION_MULTIPLIERS = new Set([0.5, 0.7, 1, 1.2, 1.4]);
 const ALLOWED_SERVING_CONTEXTS = new Set(["home", "restaurant", "readymeal"]);
 const ALLOWED_TEXT_ESTIMATE_CONFIDENCE = new Set(["low", "medium", "high"]);
 const MAX_MEAL_DESCRIPTION_LENGTH = 180;
+const MAX_IMAGE_BASE64_LENGTH = 24 * 1024 * 1024;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -177,6 +178,15 @@ function pickFirstNonEmptyString(...candidates) {
   return "";
 }
 
+async function buildGeminiApiError(response, fallbackMessage) {
+  const text = await response.text();
+  const message = pickFirstNonEmptyString(text, fallbackMessage) || "Gemini request failed";
+  const err = new Error(message);
+  const status = normalizeNumber(response?.status, 0);
+  err.status = Number.isFinite(status) ? Math.round(status) : 0;
+  return err;
+}
+
 function extractModelText(modelData) {
   const parts = Array.isArray(modelData?.candidates?.[0]?.content?.parts) ? modelData.candidates[0].content.parts : [];
   const text = parts
@@ -299,12 +309,18 @@ Palauta VAIN JSON seuraavassa muodossa:
   "carbs": 60,
   "sugar": 0,
   "fat": 20,
+  "baseCalories": 210,
+  "baseProtein": 14,
+  "baseCarbs": 19,
+  "baseSugar": 3,
+  "baseFat": 7,
   "healthClass": "${healthClassGreen}"
 }
 
 Saannot:
 - Tunnista ruoka kuvasta.
-- Laske kalorit ja makrot annoskontekstin perusteella.
+- Laske calories/protein/carbs/sugar/fat valmiiksi annoskohtaisina arvoina annoskontekstin perusteella.
+- Palauta baseCalories/baseProtein/baseCarbs/baseSugar/baseFat aina per 100 g tai 100 ml ennen annoskorjauksia.
 - Pida sugar <= carbs.
 - Kayta pyoristettyja numeroita.
 
@@ -328,7 +344,101 @@ ${buildMealContextInstructionText(mealContext)}${profileText}`;
   };
 }
 
-// Vision-mallin analyysi: kuva + annoskonteksti samassa pyynnossa
+function pickFirstFiniteNumber(candidates = [], fallback = 0) {
+  for (const candidate of candidates) {
+    const parsed = normalizeNumber(candidate, Number.NaN);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function resolveBaseMacrosFromModel(parsed = {}, portionMacros = {}) {
+  const baseCalories = Math.max(
+    0,
+    pickFirstFiniteNumber(
+      [
+        parsed?.baseCalories,
+        parsed?.base_calories,
+        parsed?.caloriesPer100,
+        parsed?.kcalPer100,
+        parsed?.per100?.calories,
+        parsed?.per100?.kcal,
+        parsed?.per100g?.calories,
+        parsed?.per100ml?.calories,
+      ],
+      portionMacros?.calories || 0
+    )
+  );
+  const baseProtein = Math.max(
+    0,
+    pickFirstFiniteNumber(
+      [
+        parsed?.baseProtein,
+        parsed?.base_protein,
+        parsed?.proteinPer100,
+        parsed?.per100?.protein,
+        parsed?.per100g?.protein,
+        parsed?.per100ml?.protein,
+      ],
+      portionMacros?.protein || 0
+    )
+  );
+  const baseCarbs = Math.max(
+    0,
+    pickFirstFiniteNumber(
+      [
+        parsed?.baseCarbs,
+        parsed?.base_carbs,
+        parsed?.carbsPer100,
+        parsed?.per100?.carbs,
+        parsed?.per100g?.carbs,
+        parsed?.per100ml?.carbs,
+      ],
+      portionMacros?.carbs || 0
+    )
+  );
+  const baseFat = Math.max(
+    0,
+    pickFirstFiniteNumber(
+      [
+        parsed?.baseFat,
+        parsed?.base_fat,
+        parsed?.fatPer100,
+        parsed?.per100?.fat,
+        parsed?.per100g?.fat,
+        parsed?.per100ml?.fat,
+      ],
+      portionMacros?.fat || 0
+    )
+  );
+  const baseSugarRaw = Math.max(
+    0,
+    pickFirstFiniteNumber(
+      [
+        parsed?.baseSugar,
+        parsed?.base_sugar,
+        parsed?.sugarPer100,
+        parsed?.per100?.sugar,
+        parsed?.per100g?.sugar,
+        parsed?.per100ml?.sugar,
+      ],
+      portionMacros?.sugar || 0
+    )
+  );
+  const baseSugar = Math.min(baseSugarRaw, baseCarbs);
+
+  return {
+    baseCalories,
+    baseProtein,
+    baseCarbs,
+    baseSugar,
+    baseFat,
+  };
+}
+
+// Gemini-analyysi: kuva + annoskonteksti samassa pyynnossa
 async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg", mealContext, profile }) {
   const requestPayload = buildImageAnalyzeRequestPayload({
     imageBase64,
@@ -350,9 +460,9 @@ async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg
   );
 
   if (!response.ok) {
-    const text = await response.text();
-    console.error("Gemini image analyze API error:", response.status, text);
-    throw new Error(text || "Vision-analyysi epaonnistui");
+    const err = await buildGeminiApiError(response, "Gemini image analyze failed");
+    console.error("Gemini image analyze API error:", response.status, err.message);
+    throw err;
   }
 
   const data = await response.json();
@@ -369,6 +479,7 @@ async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg
     },
     "Tuntematon annos"
   );
+  const baseMacros = resolveBaseMacrosFromModel(parsed, macros);
 
   return {
     foodName: macros.name,
@@ -377,6 +488,11 @@ async function analyzeImageWithMealContext({ imageBase64, mimeType = "image/jpeg
     carbs: macros.carbs,
     sugar: macros.sugar,
     fat: macros.fat,
+    baseCalories: baseMacros.baseCalories,
+    baseProtein: baseMacros.baseProtein,
+    baseCarbs: baseMacros.baseCarbs,
+    baseSugar: baseMacros.baseSugar,
+    baseFat: baseMacros.baseFat,
     healthClass:
       typeof parsed?.healthClass === "string" && parsed.healthClass.trim()
         ? parsed.healthClass.trim()
@@ -426,8 +542,7 @@ async function extractOcrTextFromImage({ imageBase64, mimeType = "image/jpeg" })
   );
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || "OCR image extraction failed");
+    throw await buildGeminiApiError(response, "Gemini OCR extraction failed");
   }
 
   const modelData = await response.json();
@@ -1141,6 +1256,7 @@ app.post("/analyze", async (req, res) => {
   const requestBody = req.body ?? {};
   const { mode, instructions, data: reportData, ocrText, profile } = requestBody;
   const modeNormalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+  const ocrProvider = typeof requestBody?.ocrProvider === "string" ? requestBody.ocrProvider.trim().toLowerCase() : "";
   const sourceRoute = typeof requestBody?.sourceRoute === "string" ? requestBody.sourceRoute.trim() : "";
   const sourceRouteNormalized = sourceRoute.toLowerCase();
   const isOcrRouteSignal =
@@ -1167,6 +1283,7 @@ app.post("/analyze", async (req, res) => {
       mode: typeof mode === "string" ? mode : "",
       effectiveMode: isOcrMode ? "ocr" : modeNormalized || "",
       sourceRoute,
+      ...(ocrProvider ? { ocrProvider } : {}),
       hasOcrText,
       ...(modeNormalized === "text_estimate" ? { hasTextEstimateInputText } : {}),
       hasImageBase64,
@@ -1178,9 +1295,18 @@ app.post("/analyze", async (req, res) => {
     });
   };
 
-  const sendJson = (status, payload) => {
-    logAnalyzeOutcome(status, payload);
-    return res.status(status).json(payload);
+  const sendJson = (status, payload = {}) => {
+    const safePayload = isPlainObject(payload) ? { ...payload } : {};
+    if (status >= 400) {
+      if (!safePayload.error || typeof safePayload.error !== "string") {
+        safePayload.error = "Request failed";
+      }
+      if (!safePayload.details || typeof safePayload.details !== "string") {
+        safePayload.details = safePayload.error;
+      }
+    }
+    logAnalyzeOutcome(status, safePayload);
+    return res.status(status).json(safePayload);
   };
 
   const sendOk = (payload) => sendJson(200, payload);
@@ -1192,6 +1318,20 @@ app.post("/analyze", async (req, res) => {
       Object.prototype.hasOwnProperty.call(requestBody, "base64Image") ||
       Object.prototype.hasOwnProperty.call(requestBody, "photoBase64");
     const hasImageSignal = hasImageBase64 || (hasImageField && !hasOcrText);
+
+    if (hasImageBase64 && imageBase64.length > MAX_IMAGE_BASE64_LENGTH) {
+      return sendJson(413, {
+        error: "Payload too large",
+        details: "imageBase64 exceeds maximum supported payload size",
+      });
+    }
+
+    if (isOcrMode && ocrProvider && ocrProvider !== "gemini") {
+      return sendJson(400, {
+        error: "Unsupported OCR provider",
+        details: 'Only "gemini" is supported for OCR mode',
+      });
+    }
 
     if (modeNormalized === "weekly_report" || modeNormalized === "period_summary") {
       if (!instructions || typeof instructions !== "string" || !reportData || typeof reportData !== "object") {
@@ -1218,7 +1358,7 @@ app.post("/analyze", async (req, res) => {
         );
 
         if (!response.ok) {
-          throw new Error(await response.text());
+          throw await buildGeminiApiError(response, `${modeNormalized} failed`);
         }
 
         const aiData = await response.json();
@@ -1267,8 +1407,7 @@ app.post("/analyze", async (req, res) => {
       );
 
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || "Text estimate failed");
+        throw await buildGeminiApiError(response, "Text estimate failed");
       }
 
       const modelData = await response.json();
@@ -1390,6 +1529,11 @@ app.post("/analyze", async (req, res) => {
         carbs: adjusted.carbs,
         sugar: adjusted.sugar,
         fat: adjusted.fat,
+        baseCalories: adjusted.baseCalories,
+        baseProtein: adjusted.baseProtein,
+        baseCarbs: adjusted.baseCarbs,
+        baseSugar: adjusted.baseSugar,
+        baseFat: adjusted.baseFat,
         healthClass: adjusted.healthClass,
 
         // Uusi malli: products + totalCalories, jota appi odottaa
@@ -1401,6 +1545,11 @@ app.post("/analyze", async (req, res) => {
             carbs: adjusted.carbs,
             sugar: adjusted.sugar,
             fat: adjusted.fat,
+            baseCalories: adjusted.baseCalories,
+            baseProtein: adjusted.baseProtein,
+            baseCarbs: adjusted.baseCarbs,
+            baseSugar: adjusted.baseSugar,
+            baseFat: adjusted.baseFat,
           },
         ],
         totalCalories: adjusted.calories,
@@ -1433,10 +1582,10 @@ app.post("/analyze", async (req, res) => {
 ⚠️ KRIITTINEN SÄÄNTÖ KALOREISTA JA MAKROISTA:
 - Kayta aina per 100g/100ml ravintoarvoja ensisijaisena lahteena, kun ne loytyvat OCR-tekstista.
 - Jos seka per annos etta per 100g/100ml ovat saatavilla, sivuuta per annos -arvot ja laske aina per 100g/100ml pohjalta.
-- Jos OCR:sta loytyy kulutettu maara (g/ml), skaalaa per 100g/100ml arvot siihen maaraan.
-- Jos kulutettua maaraa ei loydy, kayta oletuksena 100 g/ml (eli palauta per 100g/100ml arvot sellaisenaan).
+- Ala koskaan skaalaa arvoja kulutetun maaran, annoskoon tai pakkauksen koon perusteella.
+- Palauta calories/protein/carbs/sugar/fat aina per 100 g tai per 100 ml arvoina.
 - Jos tieto on epavarma, palauta best-effort arvot ja pida makrokentat mukana.
-- Useamman tuotteen tapauksessa jokainen products-rivi kuvaa kulutettua entrya samassa muodossa.
+- Useamman tuotteen tapauksessa jokainen products-rivi kuvaa tuotetta samassa per 100 g/ml muodossa.
 - totalCalories tulee olla products-listan calories-arvojen summa.
 
 PALAAUTA VASTAUS TÄSMÄLLEEN SEURAAVASSA RAKENTEESSA (EI MITÄÄN MUUTA):
@@ -1466,8 +1615,7 @@ HUOM:
 - Jos sugar-arvo puuttuu, palauta sugar: 0 (älä jätä kenttää pois)
 - Tunnista desimaalit sekä muodossa 12.5 g että 12,5 g
 - Laske carbs, sugar, protein ja fat aina per 100g/100ml arvoista.
-- Jos OCR:sta loytyy kulutettu maara, skaalaa arvot siihen maaraan.
-- Jos kulutettu maara puuttuu, kayta oletuksena 100 g/ml.
+- Ala koskaan skaalaa arvoja kulutetun maaran tai annoskoon perusteella.
 - Validointi: kaikki makrot >= 0, sugar <= carbs; jos sugar > carbs, aseta sugar = carbs
 - Sugar-indikaattorit: joista sokereita, sokerit, sokeria, sugars, of which sugars
 - Carbs-indikaattorit: hiilihydraatit, carbohydrate, carbohydrates
@@ -1566,8 +1714,7 @@ Yksi selkeä lause.
     );
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text);
+      throw await buildGeminiApiError(response, "OCR analysis failed");
     }
 
     const data = await response.json();
@@ -1677,11 +1824,61 @@ Yksi selkeä lause.
     });
   } catch (err) {
     console.error(err);
+    const upstreamStatus = Math.round(normalizeNumber(err?.status, 0));
+    if (upstreamStatus === 413) {
+      return sendJson(413, {
+        error: "Payload too large",
+        details: err?.message || "Image payload exceeds upstream limits",
+      });
+    }
+    if (upstreamStatus === 429) {
+      return sendJson(429, {
+        error: "Rate limit exceeded",
+        details: err?.message || "Gemini API rate limit reached",
+      });
+    }
+    if (upstreamStatus >= 400 && upstreamStatus < 500) {
+      return sendJson(422, {
+        error: "Unable to analyze reliably",
+        details: err?.message || "Input data is not sufficient for reliable analysis",
+      });
+    }
+    if (upstreamStatus >= 500) {
+      return sendJson(502, {
+        error: "AI upstream error",
+        details: err?.message || "Gemini service returned an upstream error",
+      });
+    }
     return sendJson(500, {
       error: "Jokin meni pieleen",
       details: err?.message || "Tuntematon virhe",
     });
   }
+});
+
+app.use((err, _req, res, next) => {
+  if (!err) return next();
+
+  if (err?.type === "entity.too.large" || err?.status === 413) {
+    return res.status(413).json({
+      error: "Payload too large",
+      details: "Request body exceeds the maximum accepted size",
+    });
+  }
+
+  if (err instanceof SyntaxError && Object.prototype.hasOwnProperty.call(err, "body")) {
+    return res.status(400).json({
+      error: "Invalid JSON payload",
+      details: "Request body must be valid JSON",
+    });
+  }
+
+  console.error("Unhandled express error:", err);
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
+  return res.status(status).json({
+    error: "Internal server error",
+    details: err?.message || "Unknown server error",
+  });
 });
 
 const PORT = process.env.PORT || 3000;
